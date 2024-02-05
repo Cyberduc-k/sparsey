@@ -24,6 +24,16 @@ pub trait IntoConfig<Marker>: Sized {
     }
 }
 
+#[doc(hidden)]
+pub struct IsSystemConfig;
+
+impl<Marker> IntoConfig<(IsSystemConfig, Marker)> for SystemConfig {
+    #[inline]
+    fn into_config(self) -> SystemConfig {
+        self
+    }
+}
+
 impl<T, Marker> IntoConfig<Marker> for T
 where
     T: IntoSystem<(), (), Marker>,
