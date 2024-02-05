@@ -11,7 +11,7 @@ fn test_components_crud() {
 
     // Create entity without any components
     let e0 = entities.create(());
-    entities.run(|a: Comp<A>, b: Comp<B>| {
+    entities.run(move |a: Comp<A>, b: Comp<B>| {
         assert!(!a.contains(e0));
         assert!(!b.contains(e0));
 
@@ -21,7 +21,7 @@ fn test_components_crud() {
 
     // Add component A
     entities.insert(e0, (A(1),));
-    entities.run(|a: Comp<A>, b: Comp<B>| {
+    entities.run(move |a: Comp<A>, b: Comp<B>| {
         assert!(a.contains(e0));
         assert!(!b.contains(e0));
 
@@ -31,7 +31,7 @@ fn test_components_crud() {
 
     // Add component B
     entities.insert(e0, (B(1),));
-    entities.run(|a: Comp<A>, b: Comp<B>| {
+    entities.run(move |a: Comp<A>, b: Comp<B>| {
         assert!(a.contains(e0));
         assert!(b.contains(e0));
 
@@ -41,7 +41,7 @@ fn test_components_crud() {
 
     // Remove component A
     assert_eq!(entities.remove::<(A,)>(e0), (Some(A(1)),));
-    entities.run(|a: Comp<A>, b: Comp<B>| {
+    entities.run(move |a: Comp<A>, b: Comp<B>| {
         assert!(!a.contains(e0));
         assert!(b.contains(e0));
 
@@ -51,7 +51,7 @@ fn test_components_crud() {
 
     // Try to remove missing component
     assert_eq!(entities.remove::<(A,)>(e0), (None,));
-    entities.run(|a: Comp<A>, b: Comp<B>| {
+    entities.run(move |a: Comp<A>, b: Comp<B>| {
         assert!(!a.contains(e0));
         assert!(b.contains(e0));
 
@@ -61,7 +61,7 @@ fn test_components_crud() {
 
     // Components are removed when the entity is destroyed
     entities.destroy(e0);
-    entities.run(|a: Comp<A>, b: Comp<B>| {
+    entities.run(move |a: Comp<A>, b: Comp<B>| {
         assert!(!a.contains(e0));
         assert!(!b.contains(e0));
 

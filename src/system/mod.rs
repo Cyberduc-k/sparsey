@@ -1,90 +1,104 @@
 //! Hadles functions that borrow data from a registry during execution.
 
-mod borrow;
+mod commands;
+mod deferred;
+mod exclusive_param;
+mod exclusive_system;
+mod function_system;
+mod local;
 mod param;
 mod run;
 
-pub use self::borrow::*;
+use std::borrow::Cow;
+
+pub use self::commands::*;
+pub use self::deferred::*;
+pub use self::exclusive_param::*;
+pub use self::local::*;
 pub use self::param::*;
 pub use self::run::*;
 
-use crate::entity::EntityStorage;
-use crate::resource::ResourceStorage;
-use crate::World;
-
 /// Encapsulates a function that borrows data from a registry during execution.
-pub struct System<TRegistry = World, TReturn = ()> {
-    system_fn: Box<dyn FnMut(&TRegistry) -> TReturn + Send + Sync + 'static>,
-    params: &'static [SystemParamKind],
-}
+pub trait System<TRegistry>: Send + Sync + 'static {
+    /// The system's input.
+    type In;
 
-impl<TRegistry, TReturn> System<TRegistry, TReturn> {
-    /// Creates a new system from the given runnable function.
-    #[must_use]
-    pub fn new<TParams>(f: impl IntoSystem<TRegistry, TParams, TReturn>) -> Self {
-        f.system()
+    /// The system's output.
+    type Out;
+
+    /// Returns the system's name.
+    fn name(&self) -> Cow<'static, str>;
+
+    /// The system parameters.
+    fn param_kinds(&self) -> &[SystemParamKind];
+
+    /// Runs the system with the given input and registry.
+    unsafe fn run_unsafe(&mut self, input: Self::In, registry: &TRegistry) -> Self::Out;
+
+    /// Runs the system with the given input and exclusive access to the registry.
+    fn run(&mut self, input: Self::In, registry: &mut TRegistry) -> Self::Out {
+        unsafe { self.run_unsafe(input, registry) }
     }
 
-    /// Runs the system in the given `registry`.
-    pub fn run(&mut self, registry: &TRegistry) -> TReturn {
-        (self.system_fn)(registry)
+    /// Applies any [`Deferred`] system parmeters.
+    fn apply_deferred(&mut self, registry: &mut TRegistry);
+
+    /// Initialize the system state.
+    fn initialize(&mut self, registry: &mut TRegistry);
+
+    /// Returns whether this system has exclusive acces to the registry.
+    fn is_exclusive(&self) -> bool;
+}
+
+/// [`System`] types that do not modify the registry when run.
+pub unsafe trait ReadonlySystem<TRegistry>: System<TRegistry> {
+    /// Runs this system with the given input and registry.
+    fn run_readyonly(&mut self, input: Self::In, registry: &TRegistry) -> Self::Out {
+        unsafe { self.run_unsafe(input, registry) }
     }
+}
 
-    /// Returns the data that the system borrows from the registry during execution.
-    #[must_use]
-    pub fn params(&self) -> &[SystemParamKind] {
-        self.params
+/// A convenience type alias for a boxed [`System`] trait object.
+pub type BoxedSystem<TRegistry, In = (), Out = ()> = Box<dyn System<TRegistry, In = In, Out = Out>>;
+
+/// Conversion trait to turn something into a [`System`].
+pub trait IntoSystem<TRegistry, In, Out, Marker>: Sized {
+    /// The type of [`System`] that this instance converts into.
+    type System: System<TRegistry, In = In, Out = Out>;
+
+    /// Turn this value into its corresponding [`System`].
+    fn into_system(self) -> Self::System;
+}
+
+impl<T: System<TRegistry>, TRegistry> IntoSystem<TRegistry, T::In, T::Out, ()> for T {
+    type System = T;
+
+    fn into_system(self) -> Self::System {
+        self
     }
 }
 
-/// Helper trait for creating systems.
-pub trait IntoSystem<TRegistry, TParams, TReturn> {
-    /// Creates a new system from the given runnable function.
-    #[must_use]
-    fn system(self) -> System<TRegistry, TReturn>;
+/// Wrapper type to mark a [`SystemParam`] as an input.
+pub struct In<In>(pub In);
+
+impl<TRegistry, In, Out> std::fmt::Debug for dyn System<TRegistry, In = In, Out = Out>
+where
+    TRegistry: 'static,
+    In: 'static,
+    Out: 'static,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name())
+    }
 }
 
-macro_rules! impl_into_system {
-    ($($Param:ident),*) => {
-        impl_into_system_in!(world: World; $($Param),*);
-        impl_into_system_in!(entities: EntityStorage; $($Param),*);
-        impl_into_system_in!(resources: ResourceStorage; $($Param),*);
-    };
+impl<TRegistry, In, Out> std::fmt::Debug for dyn ReadonlySystem<TRegistry, In = In, Out = Out>
+where
+    TRegistry: 'static,
+    In: 'static,
+    Out: 'static,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name())
+    }
 }
-
-macro_rules! impl_into_system_in {
-    ($registry:ident: $Registry:ident; $($Param:ident),*) => {
-        impl<TFunc, TReturn, $($Param),*> IntoSystem<$Registry, ($($Param,)*), TReturn> for TFunc
-        where
-            TFunc: Run<$Registry, ($($Param,)*), TReturn> + Send + Sync + 'static,
-            for<'a> &'a mut TFunc: Run<$Registry, ($($Param,)*), TReturn>,
-        {
-            fn system(mut self) -> System<$Registry, TReturn> {
-                System {
-                    system_fn: Box::new(move |$registry: &$Registry| {
-                        Run::run(&mut self, $registry)
-                    }),
-                    params: TFunc::PARAMS,
-                }
-            }
-        }
-    };
-}
-
-impl_into_system!();
-impl_into_system!(A);
-impl_into_system!(A, B);
-impl_into_system!(A, B, C);
-impl_into_system!(A, B, C, D);
-impl_into_system!(A, B, C, D, E);
-impl_into_system!(A, B, C, D, E, F);
-impl_into_system!(A, B, C, D, E, F, G);
-impl_into_system!(A, B, C, D, E, F, G, H);
-impl_into_system!(A, B, C, D, E, F, G, H, I);
-impl_into_system!(A, B, C, D, E, F, G, H, I, J);
-impl_into_system!(A, B, C, D, E, F, G, H, I, J, K);
-impl_into_system!(A, B, C, D, E, F, G, H, I, J, K, L);
-impl_into_system!(A, B, C, D, E, F, G, H, I, J, K, L, M);
-impl_into_system!(A, B, C, D, E, F, G, H, I, J, K, L, M, N);
-impl_into_system!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O);
-impl_into_system!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P);

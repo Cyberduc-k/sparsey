@@ -1,5 +1,7 @@
 //! Resources example.
 
+mod deferred;
+
 use sparsey::prelude::*;
 
 #[derive(Clone, Copy, Default, Debug)]

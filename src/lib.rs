@@ -1,3 +1,5 @@
+#![feature(exclusive_wrapper)]
+
 //! Entity Component System based on sparse sets.
 //!
 //! ```rust,no_test
@@ -26,6 +28,7 @@
 pub mod entity;
 pub mod query;
 pub mod resource;
+pub mod schedule;
 pub mod system;
 pub mod util;
 
@@ -34,7 +37,8 @@ pub mod prelude {
     pub use crate::entity::{Comp, CompMut, Entities, Entity, EntityStorage, GroupLayout};
     pub use crate::query::{BuildCompoundQuery, IntoEntityIter, Query};
     pub use crate::resource::{Res, ResMut, ResourceStorage};
-    pub use crate::system::{IntoSystem, Run, System};
+    pub use crate::schedule::{IntoConfig, Schedule, ScheduleBuilder};
+    pub use crate::system::{Commands, Deferred, IntoSystem, Local, Run, System};
     pub use crate::World;
 }
 
@@ -82,5 +86,39 @@ impl World {
     pub fn reset(&mut self) {
         self.entities.reset();
         self.resources.clear();
+    }
+}
+
+/// A registry.
+pub trait Registry {
+    /// maintain the registry.
+    fn maintain(&mut self);
+}
+
+impl Registry for World {
+    fn maintain(&mut self) {
+        self.entities.maintain();
+    }
+}
+
+impl Registry for EntityStorage {
+    fn maintain(&mut self) {
+        self.maintain();
+    }
+}
+
+impl Registry for ResourceStorage {
+    fn maintain(&mut self) {}
+}
+
+/// Create data from a registry.
+pub trait FromRegistry<TRegistry> {
+    /// Create data from the given `registry`.
+    fn from_registry(registry: &mut TRegistry) -> Self;
+}
+
+impl<T: Default, TRegistry> FromRegistry<TRegistry> for T {
+    fn from_registry(_: &mut TRegistry) -> Self {
+        T::default()
     }
 }
