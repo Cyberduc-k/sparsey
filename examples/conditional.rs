@@ -1,6 +1,7 @@
 //! Run systems conditionally.
 
 use sparsey::prelude::*;
+use sparsey::schedule::Update;
 
 #[derive(Default)]
 struct Flag(bool);
@@ -19,11 +20,13 @@ fn stateful_condition(flag: Res<Flag>) -> bool {
 
 fn main() {
     let mut world = World::default();
-    let mut system = stateful_system.run_if(stateful_condition);
-    system.initialize(&mut world);
-    world.resources.insert(Flag(true));
+    let mut schedule = Schedule::builder()
+        .add_system(Update, stateful_system.run_if(stateful_condition))
+        .build();
+    schedule.initialize(&mut world);
+    world.insert_resource(Flag(true));
 
     for _ in 0..3 {
-        system.run(&mut world);
+        schedule.run(&mut world);
     }
 }
