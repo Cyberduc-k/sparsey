@@ -3,9 +3,9 @@ use std::ptr::NonNull;
 use std::sync::Exclusive;
 
 use crate::entity::ComponentSet;
-use crate::prelude::{Entities, Entity};
+use crate::prelude::{Entities, Entity, World};
 use crate::resource::Resource;
-use crate::World;
+use crate::world::UnsafeWorldCell;
 
 use super::{Deferred, SystemBuffer, SystemParam, SystemParamKind};
 
@@ -28,15 +28,14 @@ pub struct CommandQueue {
 }
 
 impl SystemBuffer for CommandQueue {
-    type Registry = World;
-
     fn apply(&mut self, world: &mut World) {
         self.apply_or_drop_queud(Some(world));
     }
 }
 
-impl SystemParam<World> for Commands<'_, '_> {
+impl SystemParam for Commands<'_, '_> {
     const KIND: SystemParamKind = SystemParamKind::Entities;
+    const SEND: bool = true;
 
     type Item<'w, 's> = Commands<'w, 's>;
     type State = Exclusive<CommandQueue>;
@@ -45,10 +44,13 @@ impl SystemParam<World> for Commands<'_, '_> {
         Default::default()
     }
 
-    fn borrow<'w, 's>(state: &'s mut Self::State, world: &'w World) -> Self::Item<'w, 's> {
+    unsafe fn borrow<'w, 's>(
+        state: &'s mut Self::State,
+        world: UnsafeWorldCell<'w>,
+    ) -> Self::Item<'w, 's> {
         Commands {
             queue: Deferred::borrow(state, world),
-            entities: world.entities.borrow_entities(),
+            entities: world.entities().borrow_entities(),
         }
     }
 }

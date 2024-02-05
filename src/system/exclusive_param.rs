@@ -2,20 +2,20 @@
 
 use std::sync::Exclusive;
 
-use crate::FromRegistry;
+use crate::prelude::{FromWorld, World};
 
 use super::{Local, LocalData};
 
 /// Trait implemented by types that can be borrowed by systems during execution.
-pub trait ExclusiveSystemParam<TRegistry> {
+pub trait ExclusiveSystemParam {
     /// The system parameter generic over the lifetimes `'w` and `'s`.
     type Item<'s>;
 
     /// The state used by this parameter.
     type State: LocalData;
 
-    /// Create the initial state from the given `registry`.
-    fn init_state(registry: &mut TRegistry) -> Self::State;
+    /// Create the initial state from the [`World`].
+    fn init_state(world: &mut World) -> Self::State;
 
     /// Borrows data from the given `registry`.
     #[must_use]
@@ -23,30 +23,30 @@ pub trait ExclusiveSystemParam<TRegistry> {
 }
 
 /// A set of multiple [`ExclusiveSystemParam`].
-pub trait ExclusiveSystemParamSet<TRegistry> {
+pub trait ExclusiveSystemParamSet {
     /// The system parameter set generic over the lifetimes `'w` and `'s`.
     type Item<'s>;
 
     /// The state used by this parameter set.
     type State: LocalData;
 
-    /// Create the initial state from the given `registry`.
-    fn init_state(registry: &mut TRegistry) -> Self::State;
+    /// Create the initial state from the [`World`].
+    fn init_state(world: &mut World) -> Self::State;
 
-    /// Borrows data from the given `registry`.
+    /// Borrows data from the state.
     #[must_use]
     fn borrow<'s>(state: &'s mut Self::State) -> Self::Item<'s>;
 }
 
-impl<T, TRegistry> ExclusiveSystemParam<TRegistry> for Local<'_, T>
+impl<T> ExclusiveSystemParam for Local<'_, T>
 where
-    T: LocalData + FromRegistry<TRegistry>,
+    T: LocalData + FromWorld,
 {
     type Item<'s> = Local<'s, T>;
     type State = Exclusive<T>;
 
-    fn init_state(registry: &mut TRegistry) -> Self::State {
-        Exclusive::new(T::from_registry(registry))
+    fn init_state(world: &mut World) -> Self::State {
+        Exclusive::new(T::from_world(world))
     }
 
     fn borrow<'s>(state: &'s mut Self::State) -> Self::Item<'s> {
@@ -56,16 +56,16 @@ where
 
 macro_rules! impl_exclusive_system_param_set {
     ($(($Param:ident $n:tt)),*) => {
-        impl<TRegistry, $($Param),*> ExclusiveSystemParamSet<TRegistry> for ($($Param,)*)
+        impl<$($Param),*> ExclusiveSystemParamSet for ($($Param,)*)
         where
-            $($Param: ExclusiveSystemParam<TRegistry>),*
+            $($Param: ExclusiveSystemParam),*
         {
             type Item<'s> = ($($Param::Item<'s>,)*);
             type State = ($($Param::State,)*);
 
             #[allow(clippy::unused_unit, unused_variables)]
-            fn init_state(registry: &mut TRegistry) -> Self::State {
-                ($($Param::init_state(registry),)*)
+            fn init_state(world: &mut World) -> Self::State {
+                ($($Param::init_state(world),)*)
             }
 
             #[allow(clippy::unused_unit, unused_variables)]

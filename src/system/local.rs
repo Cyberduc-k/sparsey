@@ -2,8 +2,9 @@ use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::sync::Exclusive;
 
+use crate::prelude::{FromWorld, World};
 use crate::util::TypeData;
-use crate::FromRegistry;
+use crate::world::UnsafeWorldCell;
 
 use super::{ReadonlySystemParam, SystemParam, SystemParamKind};
 
@@ -16,28 +17,29 @@ pub trait LocalData: Send + Sync + 'static {}
 
 impl<T: Send + Sync + 'static> LocalData for T {}
 
-impl<T, TRegistry> SystemParam<TRegistry> for Local<'_, T>
+impl<T> SystemParam for Local<'_, T>
 where
-    T: LocalData + FromRegistry<TRegistry>,
+    T: LocalData + FromWorld,
 {
     const KIND: SystemParamKind = SystemParamKind::State(TypeData::new::<T>());
+    const SEND: bool = true;
 
-    type Item<'w, 's> = Local<'s, T> where TRegistry: 'w;
+    type Item<'w, 's> = Local<'s, T>;
     type State = Exclusive<T>;
 
-    fn init_state(registry: &mut TRegistry) -> Self::State {
-        Exclusive::new(T::from_registry(registry))
+    fn init_state(world: &mut World) -> Self::State {
+        Exclusive::new(T::from_world(world))
     }
 
-    fn borrow<'w, 's>(state: &'s mut Self::State, _: &'w TRegistry) -> Self::Item<'w, 's> {
+    unsafe fn borrow<'w, 's>(
+        state: &'s mut Self::State,
+        _: UnsafeWorldCell<'w>,
+    ) -> Self::Item<'w, 's> {
         Local(state.get_mut())
     }
 }
 
-unsafe impl<T, TRegistry> ReadonlySystemParam<TRegistry> for Local<'_, T> where
-    T: LocalData + FromRegistry<TRegistry>
-{
-}
+unsafe impl<T> ReadonlySystemParam for Local<'_, T> where T: LocalData + FromWorld {}
 
 impl<'s, T> Deref for Local<'s, T> {
     type Target = T;

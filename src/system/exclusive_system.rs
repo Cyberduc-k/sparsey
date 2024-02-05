@@ -1,29 +1,30 @@
 use std::borrow::Cow;
 use std::marker::PhantomData;
 
+use crate::prelude::World;
+use crate::world::UnsafeWorldCell;
+
 use super::exclusive_param::{ExclusiveSystemParam, ExclusiveSystemParamSet};
 use super::{In, IntoSystem, System};
-use crate::{EntityStorage, ResourceStorage, World};
 
-pub struct ExclusiveSystem<Marker, TRegistry, F>
+pub struct ExclusiveSystem<F, Marker>
 where
-    F: ExclusiveSystemParamFunction<Marker, TRegistry>,
+    F: ExclusiveSystemParamFunction<Marker>,
 {
     func: F,
-    param_state: Option<<F::Params as ExclusiveSystemParamSet<TRegistry>>::State>,
-    marker: PhantomData<fn(&mut TRegistry) -> Marker>,
+    param_state: Option<<F::Params as ExclusiveSystemParamSet>::State>,
+    marker: PhantomData<fn() -> Marker>,
 }
 
 #[doc(hidden)]
 pub struct IsExclusiveSystem;
 
-impl<TRegistry, Marker, F> IntoSystem<TRegistry, F::In, F::Out, (IsExclusiveSystem, Marker)> for F
+impl<Marker, F> IntoSystem<F::In, F::Out, (IsExclusiveSystem, Marker)> for F
 where
-    TRegistry: 'static,
     Marker: 'static,
-    F: ExclusiveSystemParamFunction<Marker, TRegistry>,
+    F: ExclusiveSystemParamFunction<Marker>,
 {
-    type System = ExclusiveSystem<Marker, TRegistry, F>;
+    type System = ExclusiveSystem<F, Marker>;
 
     fn into_system(self) -> Self::System {
         ExclusiveSystem {
@@ -34,11 +35,10 @@ where
     }
 }
 
-impl<TRegistry, Marker, F> System<TRegistry> for ExclusiveSystem<Marker, TRegistry, F>
+impl<Marker, F> System for ExclusiveSystem<F, Marker>
 where
-    TRegistry: 'static,
     Marker: 'static,
-    F: ExclusiveSystemParamFunction<Marker, TRegistry>,
+    F: ExclusiveSystemParamFunction<Marker>,
 {
     type In = F::In;
     type Out = F::Out;
@@ -54,24 +54,24 @@ where
     }
 
     #[inline]
-    unsafe fn run_unsafe(&mut self, _: Self::In, _: &TRegistry) -> Self::Out {
+    unsafe fn run_unsafe(&mut self, _: Self::In, _: UnsafeWorldCell) -> Self::Out {
         panic!("cannot run exclusive systems with a shared registry");
     }
 
-    fn run(&mut self, input: Self::In, registry: &mut TRegistry) -> Self::Out {
+    fn run(&mut self, input: Self::In, world: &mut World) -> Self::Out {
         let state = self
             .param_state
             .as_mut()
             .expect("param_state not initialized");
         let params = F::Params::borrow(state);
-        self.func.run(registry, input, params)
+        self.func.run(world, input, params)
     }
 
     #[inline]
-    fn apply_deferred(&mut self, _: &mut TRegistry) {}
+    fn apply_deferred(&mut self, _: &mut World) {}
 
     #[inline]
-    fn initialize(&mut self, registry: &mut TRegistry) {
+    fn initialize(&mut self, registry: &mut World) {
         self.param_state = Some(F::Params::init_state(registry));
     }
 
@@ -79,40 +79,37 @@ where
     fn is_exclusive(&self) -> bool {
         true
     }
+
+    #[inline]
+    fn is_thread_local(&self) -> bool {
+        true
+    }
 }
 
-pub trait ExclusiveSystemParamFunction<Marker, TRegistry>: Send + Sync + 'static {
+pub trait ExclusiveSystemParamFunction<Marker>: Send + Sync + 'static {
     type In;
     type Out;
-    type Params: ExclusiveSystemParamSet<TRegistry>;
+    type Params: ExclusiveSystemParamSet;
 
     fn run(
         &mut self,
-        registry: &mut TRegistry,
+        world: &mut World,
         input: Self::In,
-        param: <Self::Params as ExclusiveSystemParamSet<TRegistry>>::Item<'_>,
+        param: <Self::Params as ExclusiveSystemParamSet>::Item<'_>,
     ) -> Self::Out;
 }
 
 macro_rules! impl_exclusive_system_function {
     ($(($Param:ident $n:tt)),*) => {
-        impl_exclusive_system_function_in!(world: World; $(($Param $n)),*);
-        impl_exclusive_system_function_in!(entities: EntityStorage; $(($Param $n)),*);
-        impl_exclusive_system_function_in!(resources: ResourceStorage; $(($Param $n)),*);
-    };
-}
-
-macro_rules! impl_exclusive_system_function_in {
-    ($registry:ident: $Registry:ty; $(($Param:ident $n:tt)),*) => {
         #[allow(non_snake_case)]
-        impl<Out, Func, $($Param),*> ExclusiveSystemParamFunction<fn($($Param),*) -> Out, $Registry> for Func
+        impl<Out, Func, $($Param),*> ExclusiveSystemParamFunction<fn($($Param),*) -> Out> for Func
         where
             Out: 'static,
             Func: Send + Sync + 'static,
             for<'a> &'a mut Func:
-                FnMut(&mut $Registry, $($Param),*) -> Out +
-                FnMut(&mut $Registry, $(<$Param as ExclusiveSystemParam<$Registry>>::Item<'_>),*) -> Out,
-            $($Param: ExclusiveSystemParam<$Registry>),*
+                FnMut(&mut World, $($Param),*) -> Out +
+                FnMut(&mut World, $(<$Param as ExclusiveSystemParam>::Item<'_>),*) -> Out,
+            $($Param: ExclusiveSystemParam),*
         {
             type In = ();
             type Out = Out;
@@ -120,28 +117,28 @@ macro_rules! impl_exclusive_system_function_in {
 
             #[inline]
             #[allow(unused_variables)]
-            fn run(&mut self, $registry: &mut $Registry, _: (), param: <Self::Params as ExclusiveSystemParamSet<$Registry>>::Item<'_>) -> Out {
+            fn run(&mut self, world: &mut World, _: (), param: <Self::Params as ExclusiveSystemParamSet>::Item<'_>) -> Out {
                 #[allow(clippy::too_many_arguments)]
                 fn call_inner<Out, $($Param),*>(
-                    mut f: impl FnMut(&mut $Registry, $($Param),*) -> Out,
-                    $registry: &mut $Registry,
+                    mut f: impl FnMut(&mut World, $($Param),*) -> Out,
+                    world: &mut World,
                     $($Param: $Param,)*
                 ) -> Out {
-                    f($registry, $($Param,)*)
+                    f(world, $($Param,)*)
                 }
-                call_inner(self, $registry, $(param.$n),*)
+                call_inner(self, world, $(param.$n),*)
             }
         }
 
         #[allow(non_snake_case)]
-        impl<Input, Out, Func, $($Param),*> ExclusiveSystemParamFunction<fn(In<Input>, $($Param),*) -> Out, $Registry> for Func
+        impl<Input, Out, Func, $($Param),*> ExclusiveSystemParamFunction<fn(In<Input>, $($Param),*) -> Out> for Func
         where
             Out: 'static,
             Func: Send + Sync + 'static,
             for<'a> &'a mut Func:
-                FnMut(&mut $Registry, In<Input>, $($Param),*) -> Out +
-                FnMut(&mut $Registry, In<Input>, $(<$Param as ExclusiveSystemParam<$Registry>>::Item<'_>),*) -> Out,
-            $($Param: ExclusiveSystemParam<$Registry>),*
+                FnMut(&mut World, In<Input>, $($Param),*) -> Out +
+                FnMut(&mut World, In<Input>, $(<$Param as ExclusiveSystemParam>::Item<'_>),*) -> Out,
+            $($Param: ExclusiveSystemParam),*
         {
             type In = Input;
             type Out = Out;
@@ -149,17 +146,17 @@ macro_rules! impl_exclusive_system_function_in {
 
             #[inline]
             #[allow(unused_variables)]
-            fn run(&mut self, $registry: &mut $Registry, input: Input, param: <Self::Params as ExclusiveSystemParamSet<$Registry>>::Item<'_>) -> Out {
+            fn run(&mut self, world: &mut World, input: Input, param: <Self::Params as ExclusiveSystemParamSet>::Item<'_>) -> Out {
                 #[allow(clippy::too_many_arguments)]
                 fn call_inner<Input, Out, $($Param),*>(
-                    mut f: impl FnMut(&mut $Registry, In<Input>, $($Param),*) -> Out,
-                    $registry: &mut $Registry,
+                    mut f: impl FnMut(&mut World, In<Input>, $($Param),*) -> Out,
+                    world: &mut World,
                     input: In<Input>,
                     $($Param: $Param,)*
                 ) -> Out {
-                    f($registry, input, $($Param),*)
+                    f(world, input, $($Param),*)
                 }
-                call_inner(self, $registry, In(input), $(param.$n),*)
+                call_inner(self, world, In(input), $(param.$n),*)
             }
         }
     };

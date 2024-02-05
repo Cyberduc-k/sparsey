@@ -52,11 +52,11 @@ fn main() {
         .add_group::<(Position, Sprite, Transparent)>()
         .build();
 
-    let mut entities = EntityStorage::new(&layout);
-    entities.create((Position(0, 0), Sprite { id: 0 }));
-    entities.create((Position(1, 1), Sprite { id: 1 }));
-    entities.create((Position(2, 2), Sprite { id: 2 }, Transparent));
-    entities.create((Position(3, 3), Sprite { id: 3 }, Transparent));
+    let mut world = World::new(&layout);
+    world.create((Position(0, 0), Sprite { id: 0 }));
+    world.create((Position(1, 1), Sprite { id: 1 }));
+    world.create((Position(2, 2), Sprite { id: 2 }, Transparent));
+    world.create((Position(3, 3), Sprite { id: 3 }, Transparent));
 
-    entities.run(print_sprites);
+    world.run(print_sprites);
 }

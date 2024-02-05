@@ -19,6 +19,15 @@ impl TypeData {
         Self(&ComponentDataImpl::<T>(PhantomData))
     }
 
+    /// Returns the type data for type `T`.
+    #[must_use]
+    pub const fn new_non_send<T>() -> Self
+    where
+        T: 'static,
+    {
+        Self(&NonSendImpl::<T>(PhantomData))
+    }
+
     /// Returns the type id of the type used in [`new`](Self::new).
     #[inline]
     #[must_use]
@@ -118,5 +127,32 @@ where
 
     fn create_sparse_set(&self) -> ComponentSparseSet {
         ComponentSparseSet::new::<T>()
+    }
+}
+
+struct NonSendImpl<T>(PhantomData<*const T>);
+
+unsafe impl<T> Send for NonSendImpl<T> {
+    // Empty
+}
+
+unsafe impl<T> Sync for NonSendImpl<T> {
+    // Empty
+}
+
+unsafe impl<T> AbstractTypeData for NonSendImpl<T>
+where
+    T: 'static,
+{
+    fn type_id(&self) -> TypeId {
+        TypeId::of::<T>()
+    }
+
+    fn type_name(&self) -> &'static str {
+        any::type_name::<T>()
+    }
+
+    fn create_sparse_set(&self) -> ComponentSparseSet {
+        unreachable!()
     }
 }

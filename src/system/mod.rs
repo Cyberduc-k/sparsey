@@ -11,6 +11,8 @@ mod run;
 
 use std::borrow::Cow;
 
+use crate::world::{UnsafeWorldCell, World};
+
 pub use self::commands::*;
 pub use self::deferred::*;
 pub use self::exclusive_param::*;
@@ -19,7 +21,7 @@ pub use self::param::*;
 pub use self::run::*;
 
 /// Encapsulates a function that borrows data from a registry during execution.
-pub trait System<TRegistry>: Send + Sync + 'static {
+pub trait System: Send + Sync + 'static {
     /// The system's input.
     type In;
 
@@ -32,45 +34,48 @@ pub trait System<TRegistry>: Send + Sync + 'static {
     /// The system parameters.
     fn param_kinds(&self) -> &[SystemParamKind];
 
-    /// Runs the system with the given input and registry.
-    unsafe fn run_unsafe(&mut self, input: Self::In, registry: &TRegistry) -> Self::Out;
+    /// Runs the system with the given input and [`World`].
+    unsafe fn run_unsafe(&mut self, input: Self::In, world: UnsafeWorldCell) -> Self::Out;
 
-    /// Runs the system with the given input and exclusive access to the registry.
-    fn run(&mut self, input: Self::In, registry: &mut TRegistry) -> Self::Out {
-        unsafe { self.run_unsafe(input, registry) }
+    /// Runs the system with the given input and exclusive access to the [`World`].
+    fn run(&mut self, input: Self::In, world: &mut World) -> Self::Out {
+        unsafe { self.run_unsafe(input, world.as_unsafe_world_cell()) }
     }
 
     /// Applies any [`Deferred`] system parmeters.
-    fn apply_deferred(&mut self, registry: &mut TRegistry);
+    fn apply_deferred(&mut self, world: &mut World);
 
     /// Initialize the system state.
-    fn initialize(&mut self, registry: &mut TRegistry);
+    fn initialize(&mut self, registry: &mut World);
 
-    /// Returns whether this system has exclusive acces to the registry.
+    /// Returns whether this system has exclusive acces to the [`World`].
     fn is_exclusive(&self) -> bool;
+
+    /// Returns whether this system must run on the main thread.
+    fn is_thread_local(&self) -> bool;
 }
 
 /// [`System`] types that do not modify the registry when run.
-pub unsafe trait ReadonlySystem<TRegistry>: System<TRegistry> {
-    /// Runs this system with the given input and registry.
-    fn run_readyonly(&mut self, input: Self::In, registry: &TRegistry) -> Self::Out {
-        unsafe { self.run_unsafe(input, registry) }
+pub unsafe trait ReadonlySystem: System {
+    /// Runs this system with the given input and [`World`].
+    fn run_readonly(&mut self, input: Self::In, world: &World) -> Self::Out {
+        unsafe { self.run_unsafe(input, world.as_unsafe_world_cell()) }
     }
 }
 
 /// A convenience type alias for a boxed [`System`] trait object.
-pub type BoxedSystem<TRegistry, In = (), Out = ()> = Box<dyn System<TRegistry, In = In, Out = Out>>;
+pub type BoxedSystem<In = (), Out = ()> = Box<dyn System<In = In, Out = Out>>;
 
 /// Conversion trait to turn something into a [`System`].
-pub trait IntoSystem<TRegistry, In, Out, Marker>: Sized {
+pub trait IntoSystem<In, Out, Marker>: Sized {
     /// The type of [`System`] that this instance converts into.
-    type System: System<TRegistry, In = In, Out = Out>;
+    type System: System<In = In, Out = Out>;
 
     /// Turn this value into its corresponding [`System`].
     fn into_system(self) -> Self::System;
 }
 
-impl<T: System<TRegistry>, TRegistry> IntoSystem<TRegistry, T::In, T::Out, ()> for T {
+impl<T: System> IntoSystem<T::In, T::Out, ()> for T {
     type System = T;
 
     fn into_system(self) -> Self::System {
@@ -81,9 +86,8 @@ impl<T: System<TRegistry>, TRegistry> IntoSystem<TRegistry, T::In, T::Out, ()> f
 /// Wrapper type to mark a [`SystemParam`] as an input.
 pub struct In<In>(pub In);
 
-impl<TRegistry, In, Out> std::fmt::Debug for dyn System<TRegistry, In = In, Out = Out>
+impl<In, Out> std::fmt::Debug for dyn System<In = In, Out = Out>
 where
-    TRegistry: 'static,
     In: 'static,
     Out: 'static,
 {
@@ -92,9 +96,8 @@ where
     }
 }
 
-impl<TRegistry, In, Out> std::fmt::Debug for dyn ReadonlySystem<TRegistry, In = In, Out = Out>
+impl<In, Out> std::fmt::Debug for dyn ReadonlySystem<In = In, Out = Out>
 where
-    TRegistry: 'static,
     In: 'static,
     Out: 'static,
 {

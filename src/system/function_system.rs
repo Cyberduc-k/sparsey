@@ -1,31 +1,32 @@
 use std::borrow::Cow;
 use std::marker::PhantomData;
 
+use crate::prelude::World;
+use crate::world::UnsafeWorldCell;
+
 use super::{
     In, IntoSystem, ReadonlySystem, ReadonlySystemParamSet, System, SystemParam, SystemParamKind,
     SystemParamSet,
 };
-use crate::{EntityStorage, ResourceStorage, World};
 
-pub struct FunctionSystem<Marker, TRegistry, F>
+pub struct FunctionSystem<F, Marker>
 where
-    F: SystemParamFunction<Marker, TRegistry>,
+    F: SystemParamFunction<Marker>,
 {
     func: F,
-    param_state: Option<<F::Params as SystemParamSet<TRegistry>>::State>,
-    marker: PhantomData<fn(&TRegistry) -> Marker>,
+    param_state: Option<<F::Params as SystemParamSet>::State>,
+    marker: PhantomData<fn() -> Marker>,
 }
 
 #[doc(hidden)]
 pub struct IsFunctionSystem;
 
-impl<TRegistry, Marker, F> IntoSystem<TRegistry, F::In, F::Out, (IsFunctionSystem, Marker)> for F
+impl<Marker, F> IntoSystem<F::In, F::Out, (IsFunctionSystem, Marker)> for F
 where
-    TRegistry: 'static,
     Marker: 'static,
-    F: SystemParamFunction<Marker, TRegistry>,
+    F: SystemParamFunction<Marker>,
 {
-    type System = FunctionSystem<Marker, TRegistry, F>;
+    type System = FunctionSystem<F, Marker>;
 
     fn into_system(self) -> Self::System {
         FunctionSystem {
@@ -36,11 +37,10 @@ where
     }
 }
 
-impl<TRegistry, Marker, F> System<TRegistry> for FunctionSystem<Marker, TRegistry, F>
+impl<Marker, F> System for FunctionSystem<F, Marker>
 where
-    TRegistry: 'static,
     Marker: 'static,
-    F: SystemParamFunction<Marker, TRegistry>,
+    F: SystemParamFunction<Marker>,
 {
     type In = F::In;
     type Out = F::Out;
@@ -55,74 +55,70 @@ where
         F::Params::KINDS
     }
 
-    unsafe fn run_unsafe(&mut self, input: Self::In, registry: &TRegistry) -> Self::Out {
+    unsafe fn run_unsafe(&mut self, input: Self::In, world: UnsafeWorldCell) -> Self::Out {
         let state = self
             .param_state
             .as_mut()
             .expect("param_state not initialized");
-        let params = F::Params::borrow(state, registry);
+        let params = F::Params::borrow(state, world);
         self.func.run(input, params)
     }
 
-    fn apply_deferred(&mut self, registry: &mut TRegistry) {
+    fn apply_deferred(&mut self, world: &mut World) {
         let state = self
             .param_state
             .as_mut()
             .expect("param_state not initialized");
-        F::Params::apply(state, registry);
+        F::Params::apply(state, world);
     }
 
     #[inline]
-    fn initialize(&mut self, registry: &mut TRegistry) {
-        self.param_state = Some(F::Params::init_state(registry));
+    fn initialize(&mut self, world: &mut World) {
+        self.param_state = Some(F::Params::init_state(world));
     }
 
     #[inline]
     fn is_exclusive(&self) -> bool {
         false
     }
+
+    #[inline]
+    fn is_thread_local(&self) -> bool {
+        !F::Params::SEND
+    }
 }
 
-unsafe impl<TRegistry, Marker, F> ReadonlySystem<TRegistry> for FunctionSystem<Marker, TRegistry, F>
+unsafe impl<F, Marker> ReadonlySystem for FunctionSystem<F, Marker>
 where
-    TRegistry: 'static,
     Marker: 'static,
-    F: SystemParamFunction<Marker, TRegistry>,
-    F::Params: ReadonlySystemParamSet<TRegistry>,
+    F: SystemParamFunction<Marker>,
+    F::Params: ReadonlySystemParamSet,
 {
 }
 
-pub trait SystemParamFunction<Marker, TRegistry>: Send + Sync + 'static {
+pub trait SystemParamFunction<Marker>: Send + Sync + 'static {
     type In;
     type Out;
-    type Params: SystemParamSet<TRegistry>;
+    type Params: SystemParamSet;
 
     fn run(
         &mut self,
         input: Self::In,
-        param: <Self::Params as SystemParamSet<TRegistry>>::Item<'_, '_>,
+        param: <Self::Params as SystemParamSet>::Item<'_, '_>,
     ) -> Self::Out;
 }
 
 macro_rules! impl_system_function {
     ($(($Param:ident $n:tt)),*) => {
-        impl_system_function_in!(world: World; $(($Param $n)),*);
-        impl_system_function_in!(entities: EntityStorage; $(($Param $n)),*);
-        impl_system_function_in!(resources: ResourceStorage; $(($Param $n)),*);
-    };
-}
-
-macro_rules! impl_system_function_in {
-    ($registry:ident: $Registry:ty; $(($Param:ident $n:tt)),*) => {
         #[allow(non_snake_case)]
-        impl<Out, Func, $($Param),*> SystemParamFunction<fn($($Param),*) -> Out, $Registry> for Func
+        impl<Out, Func, $($Param),*> SystemParamFunction<fn($($Param),*) -> Out> for Func
         where
             Out: 'static,
             Func: Send + Sync + 'static,
             for<'a> &'a mut Func:
                 FnMut($($Param),*) -> Out +
-                FnMut($(<$Param as SystemParam<$Registry>>::Item<'_, '_>),*) -> Out,
-            $($Param: SystemParam<$Registry>),*
+                FnMut($(<$Param as SystemParam>::Item<'_, '_>),*) -> Out,
+            $($Param: SystemParam),*
         {
             type In = ();
             type Out = Out;
@@ -130,7 +126,7 @@ macro_rules! impl_system_function_in {
 
             #[inline]
             #[allow(unused_variables)]
-            fn run(&mut self, _: (), param: <Self::Params as SystemParamSet<$Registry>>::Item<'_, '_>) -> Out {
+            fn run(&mut self, _: (), param: <Self::Params as SystemParamSet>::Item<'_, '_>) -> Out {
                 #[allow(clippy::too_many_arguments)]
                 fn call_inner<Out, $($Param),*>(
                     mut f: impl FnMut($($Param),*) -> Out,
@@ -143,14 +139,14 @@ macro_rules! impl_system_function_in {
         }
 
         #[allow(non_snake_case)]
-        impl<Input, Out, Func, $($Param),*> SystemParamFunction<fn(In<Input>, $($Param),*) -> Out, $Registry> for Func
+        impl<Input, Out, Func, $($Param),*> SystemParamFunction<fn(In<Input>, $($Param),*) -> Out> for Func
         where
             Out: 'static,
             Func: Send + Sync + 'static,
             for<'a> &'a mut Func:
                 FnMut(In<Input>, $($Param),*) -> Out +
-                FnMut(In<Input>, $(<$Param as SystemParam<$Registry>>::Item<'_, '_>),*) -> Out,
-            $($Param: SystemParam<$Registry>),*
+                FnMut(In<Input>, $(<$Param as SystemParam>::Item<'_, '_>),*) -> Out,
+            $($Param: SystemParam),*
         {
             type In = Input;
             type Out = Out;
@@ -158,7 +154,7 @@ macro_rules! impl_system_function_in {
 
             #[inline]
             #[allow(unused_variables)]
-            fn run(&mut self, input: Input, param: <Self::Params as SystemParamSet<$Registry>>::Item<'_, '_>) -> Out {
+            fn run(&mut self, input: Input, param: <Self::Params as SystemParamSet>::Item<'_, '_>) -> Out {
                 #[allow(clippy::too_many_arguments)]
                 fn call_inner<Input, Out, $($Param),*>(
                     mut f: impl FnMut(In<Input>, $($Param),*) -> Out,

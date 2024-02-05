@@ -6,113 +6,144 @@ mod label;
 
 use rustc_hash::FxHashMap;
 
+use crate::prelude::World;
+use crate::world::UnsafeWorldCell;
+
 pub use self::config::*;
 pub use self::label::*;
 
-use crate::Registry;
-
 /// Schedules systems to run sequentially or in parallel without data conflicts.
-pub struct Schedule<TRegistry> {
-    steps: Vec<ScheduleStep<TRegistry>>,
+#[derive(Debug)]
+pub struct Schedule {
+    steps: Vec<ScheduleStep>,
 }
 
 /// Steps that can be run by a [`Schedule`].
-pub enum ScheduleStep<TRegistry> {
+#[derive(Debug)]
+pub enum ScheduleStep {
     /// Runs the systems in parallel.
-    Systems(Vec<SystemConfig<TRegistry>>),
+    Systems(Vec<SystemConfig>),
+    /// Runs the systems sequentially on the main thread.
+    LocalSystems(Vec<SystemConfig>),
     /// Runs the systems sequentially.
-    ExclusiveSystems(Vec<SystemConfig<TRegistry>>),
+    ExclusiveSystems(Vec<SystemConfig>),
     /// Prevents future systems from running in parallel with previous ones.
     Barrier,
 }
 
 /// Enables creating a [`Schedule`] using the builder pattern.
-pub struct ScheduleBuilder<TRegistry> {
-    sets: FxHashMap<Box<dyn ScheduleLabel>, Vec<SimpleScheduleStep<TRegistry>>>,
+pub struct ScheduleBuilder {
+    sets: FxHashMap<Box<dyn ScheduleLabel>, Vec<SimpleScheduleStep>>,
     order: Vec<Box<dyn ScheduleLabel>>,
 }
 
-enum SimpleScheduleStep<TRegistry> {
-    System(SystemConfig<TRegistry>),
-    ExclusiveSystem(SystemConfig<TRegistry>),
+enum SimpleScheduleStep {
+    System(SystemConfig),
+    LocalSystem(SystemConfig),
+    ExclusiveSystem(SystemConfig),
     Barrier,
 }
 
-impl<TRegistry: 'static> Schedule<TRegistry> {
+impl Schedule {
     /// Enables creating a schedule using the builder pattern.
-    pub fn builder() -> ScheduleBuilder<TRegistry> {
+    pub fn builder() -> ScheduleBuilder {
         Default::default()
     }
 
     /// Consumes the schedule and returns the steps comprising it.
-    pub fn into_steps(self) -> Vec<ScheduleStep<TRegistry>> {
+    pub fn into_steps(self) -> Vec<ScheduleStep> {
         self.steps
     }
 
     /// Initializes all systems in the schedule.
-    pub fn initialize(&mut self, registry: &mut TRegistry) {
+    pub fn initialize(&mut self, world: &mut World) {
         for step in &mut self.steps {
             match step {
                 ScheduleStep::Systems(systems) => {
                     for system in systems {
-                        system.initialize(registry);
+                        system.initialize(world);
+                    }
+                }
+                ScheduleStep::LocalSystems(systems) => {
+                    for system in systems {
+                        system.initialize(world);
                     }
                 }
                 ScheduleStep::ExclusiveSystems(systems) => {
                     for system in systems {
-                        system.initialize(registry);
+                        system.initialize(world);
                     }
                 }
                 ScheduleStep::Barrier => {}
             }
         }
     }
-}
 
-impl<TRegistry: Registry + 'static> Schedule<TRegistry> {
-    /// Runs the systems. Calls `Registry::maintain` after each barrier and right before the
-    /// function returns.
-    pub fn run(&mut self, registry: &mut TRegistry) {
-        self.run_seq(registry);
+    /// Runs the systems. Calls [`maintain`](World::maintain) after each barrier and right before
+    /// the function returns.
+    pub fn run(&mut self, world: &mut World) {
+        self.run_seq(world);
     }
 
     /// Runs the systems sequentially.
-    pub fn run_seq(&mut self, registry: &mut TRegistry) {
-        self.run_generic(registry, |systems, registry| {
+    pub fn run_seq(&mut self, world: &mut World) {
+        self.run_generic(world, |systems, world| {
             for system in systems {
-                unsafe { system.run_unsafe(registry) };
+                unsafe { system.run_unsafe(world) };
+            }
+        });
+    }
+
+    /// Runs the systems in parallel.
+    pub fn run_par(&mut self, world: &mut World) {
+        use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
+        self.run_generic(world, |systems, world| {
+            if systems.len() > 1 {
+                systems.par_iter_mut().for_each(|system| {
+                    unsafe {
+                        system.run_unsafe(world);
+                    }
+                });
+            } else {
+                unsafe { systems[0].run_unsafe(world) };
             }
         });
     }
 
     fn run_generic(
         &mut self,
-        registry: &mut TRegistry,
-        mut system_runner: impl FnMut(&mut [SystemConfig<TRegistry>], &TRegistry) + Send,
+        world: &mut World,
+        mut system_runner: impl FnMut(&mut [SystemConfig], UnsafeWorldCell) + Send,
     ) {
         for step in &mut self.steps {
             match step {
                 ScheduleStep::Systems(systems) => {
-                    system_runner(systems, registry);
+                    system_runner(systems, world.as_unsafe_world_cell());
                     for system in systems {
-                        system.apply_deferred(registry);
+                        system.apply_deferred(world);
+                    }
+                }
+                ScheduleStep::LocalSystems(systems) => {
+                    for system in systems {
+                        world.maintain();
+                        system.run(world);
                     }
                 }
                 ScheduleStep::ExclusiveSystems(systems) => {
                     for system in systems {
-                        registry.maintain();
-                        system.run(registry);
+                        world.maintain();
+                        system.run(world);
                     }
                 }
-                ScheduleStep::Barrier => registry.maintain(),
+                ScheduleStep::Barrier => world.maintain(),
             }
         }
 
-        registry.maintain();
+        world.maintain();
     }
 }
 
-impl<TRegistry: 'static> Default for ScheduleBuilder<TRegistry> {
+impl Default for ScheduleBuilder {
     fn default() -> Self {
         let mut builder = Self {
             sets: Default::default(),
@@ -128,17 +159,18 @@ impl<TRegistry: 'static> Default for ScheduleBuilder<TRegistry> {
     }
 }
 
-impl<TRegistry: 'static> ScheduleBuilder<TRegistry> {
+impl ScheduleBuilder {
     /// Adds a system to the schedule.
     pub fn add_system<M>(
         &mut self,
         label: impl ScheduleLabel,
-        system: impl IntoConfig<TRegistry, M>,
+        system: impl IntoConfig<M>,
     ) -> &mut Self {
         let system = system.into_config();
-        let step = match system.is_exclusive() {
-            false => SimpleScheduleStep::System(system),
-            true => SimpleScheduleStep::ExclusiveSystem(system),
+        let step = match (system.is_exclusive(), system.is_thread_local()) {
+            (true, _) => SimpleScheduleStep::ExclusiveSystem(system),
+            (_, true) => SimpleScheduleStep::LocalSystem(system),
+            (_, _) => SimpleScheduleStep::System(system),
         };
         self.entry(Box::new(label)).push(step);
         self
@@ -192,7 +224,7 @@ impl<TRegistry: 'static> ScheduleBuilder<TRegistry> {
         self
     }
 
-    fn entry(&mut self, label: Box<dyn ScheduleLabel>) -> &mut Vec<SimpleScheduleStep<TRegistry>> {
+    fn entry(&mut self, label: Box<dyn ScheduleLabel>) -> &mut Vec<SimpleScheduleStep> {
         self.sets.entry(label.dyn_clone()).or_insert_with(|| {
             if !self.order.contains(&label) {
                 self.order.push(label);
@@ -224,18 +256,18 @@ impl<TRegistry: 'static> ScheduleBuilder<TRegistry> {
     // }
 
     /// Builds the schedule.
-    pub fn build(&mut self) -> Schedule<TRegistry> {
+    pub fn build(&mut self) -> Schedule {
         self.build_with_max_threads(usize::MAX)
     }
 
     /// Builds the schedule allowing at most `max_threads` systems to run in parallel.
-    pub fn build_with_max_threads(&mut self, max_threads: usize) -> Schedule<TRegistry> {
-        let mut steps = Vec::<ScheduleStep<TRegistry>>::new();
+    pub fn build_with_max_threads(&mut self, max_threads: usize) -> Schedule {
+        let mut steps = Vec::<ScheduleStep>::new();
 
-        fn step_to_non_conflicting_systems<'a, TRegistry: 'static>(
-            step: &'a mut ScheduleStep<TRegistry>,
-            system: &SystemConfig<TRegistry>,
-        ) -> Option<&'a mut Vec<SystemConfig<TRegistry>>> {
+        fn step_to_non_conflicting_systems<'a>(
+            step: &'a mut ScheduleStep,
+            system: &SystemConfig,
+        ) -> Option<&'a mut Vec<SystemConfig>> {
             match step {
                 ScheduleStep::Systems(systems) => {
                     let system_conflict = systems
@@ -274,6 +306,12 @@ impl<TRegistry: 'static> ScheduleBuilder<TRegistry> {
                                 None => steps.push(ScheduleStep::Systems(vec![system])),
                             }
                         }
+                        SimpleScheduleStep::LocalSystem(system) => {
+                            match steps.last_mut() {
+                                Some(ScheduleStep::LocalSystems(systems)) => systems.push(system),
+                                _ => steps.push(ScheduleStep::LocalSystems(vec![system])),
+                            }
+                        }
                         SimpleScheduleStep::ExclusiveSystem(system) => {
                             match steps.last_mut() {
                                 Some(ScheduleStep::ExclusiveSystems(systems)) => {
@@ -293,23 +331,5 @@ impl<TRegistry: 'static> ScheduleBuilder<TRegistry> {
         }
 
         Schedule { steps }
-    }
-}
-
-impl<TRegistry: 'static> std::fmt::Debug for Schedule<TRegistry> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Schedule")
-            .field("steps", &self.steps)
-            .finish()
-    }
-}
-
-impl<TRegistry: 'static> std::fmt::Debug for ScheduleStep<TRegistry> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Systems(arg0) => f.debug_tuple("Systems").field(arg0).finish(),
-            Self::ExclusiveSystems(arg0) => f.debug_tuple("ExclusiveSystems").field(arg0).finish(),
-            Self::Barrier => write!(f, "Barrier"),
-        }
     }
 }

@@ -1,18 +1,16 @@
 use std::ops::{Deref, DerefMut};
 use std::sync::Exclusive;
 
+use crate::prelude::{FromWorld, World};
 use crate::util::TypeData;
-use crate::FromRegistry;
+use crate::world::UnsafeWorldCell;
 
 use super::{ReadonlySystemParam, SystemParam, SystemParamKind};
 
 /// Types that can be used with [`Deferred<T>`] in systems.
 pub trait SystemBuffer: Send + 'static {
-    /// The registry the mutations should be applied to.
-    type Registry;
-
-    /// Applies any deferred mutations to the given `registry`.
-    fn apply(&mut self, registry: &mut Self::Registry);
+    /// Applies any deferred mutations to the [`World`].
+    fn apply(&mut self, world: &mut World);
 }
 
 /// A [`SystemParam`] that stores a buffer to defer world mutations.
@@ -39,29 +37,30 @@ impl<'a, T: SystemBuffer> DerefMut for Deferred<'a, T> {
     }
 }
 
-impl<T, TRegistry> SystemParam<TRegistry> for Deferred<'_, T>
+impl<T> SystemParam for Deferred<'_, T>
 where
-    T: SystemBuffer<Registry = TRegistry> + FromRegistry<TRegistry>,
+    T: SystemBuffer + FromWorld,
 {
     const KIND: SystemParamKind = SystemParamKind::State(TypeData::new::<Exclusive<T>>());
+    const SEND: bool = true;
 
-    type Item<'w, 's> = Deferred<'s, T> where TRegistry: 'w;
+    type Item<'w, 's> = Deferred<'s, T>;
     type State = Exclusive<T>;
 
-    fn init_state(registry: &mut TRegistry) -> Self::State {
-        Exclusive::new(T::from_registry(registry))
+    fn init_state(world: &mut World) -> Self::State {
+        Exclusive::new(T::from_world(world))
     }
 
-    fn borrow<'w, 's>(state: &'s mut Self::State, _: &'w TRegistry) -> Self::Item<'w, 's> {
+    unsafe fn borrow<'w, 's>(
+        state: &'s mut Self::State,
+        _: UnsafeWorldCell<'w>,
+    ) -> Self::Item<'w, 's> {
         Deferred(state.get_mut())
     }
 
-    fn apply(state: &mut Self::State, registry: &mut TRegistry) {
-        state.get_mut().apply(registry);
+    fn apply(state: &mut Self::State, world: &mut World) {
+        state.get_mut().apply(world);
     }
 }
 
-unsafe impl<T, TRegistry> ReadonlySystemParam<TRegistry> for Deferred<'_, T> where
-    T: SystemBuffer<Registry = TRegistry> + FromRegistry<TRegistry>
-{
-}
+unsafe impl<T> ReadonlySystemParam for Deferred<'_, T> where T: SystemBuffer + FromWorld {}

@@ -39,21 +39,21 @@ fn update_positions(mut positions: CompMut<Position>, velocities: Comp<Velocity>
     println!();
 }
 
-fn exclusive(entities: &mut EntityStorage) {
+fn exclusive(world: &mut World) {
     println!("[Exclusive system]");
-    println!("{}", entities.entities().len());
+    println!("{}", world.entities().len());
     println!();
 }
 
 fn main() {
-    let mut entities = EntityStorage::default();
-    entities.register::<Position>();
-    entities.register::<Velocity>();
-    entities.register::<Frozen>();
+    let mut world = World::default();
+    world.register::<Position>();
+    world.register::<Velocity>();
+    world.register::<Frozen>();
 
-    entities.create((Position(0, 0), Velocity(1, 1)));
-    entities.create((Position(0, 0), Velocity(2, 2)));
-    entities.create((Position(0, 0), Velocity(3, 3), Frozen));
+    world.create((Position(0, 0), Velocity(1, 1)));
+    world.create((Position(0, 0), Velocity(2, 2)));
+    world.create((Position(0, 0), Velocity(3, 3), Frozen));
 
     let mut schedule = Schedule::builder()
         .add_system(Update, exclusive)
@@ -63,9 +63,9 @@ fn main() {
 
     println!("Schedule: {schedule:#?}");
     println!();
-    schedule.initialize(&mut entities);
+    schedule.initialize(&mut world);
 
     for _ in 0..3 {
-        schedule.run(&mut entities);
+        schedule.run(&mut world);
     }
 }

@@ -16,8 +16,6 @@ impl AlarmFlag {
 }
 
 impl SystemBuffer for AlarmFlag {
-    type Registry = World;
-
     fn apply(&mut self, world: &mut World) {
         if self.0 {
             world.resources.borrow_mut::<Alarm>().0 = true;
@@ -35,13 +33,9 @@ fn deferred_system(mut counter: Local<usize>, mut alarm: Deferred<AlarmFlag>) {
 
 fn main() {
     let mut world = World::default();
-    let mut system = deferred_system.into_system();
-    system.initialize(&mut world);
     world.resources.insert(Alarm::default());
 
     for _ in 0..3 {
-        system.run((), &mut world);
+        world.run(deferred_system);
     }
-
-    system.apply_deferred(&mut world);
 }

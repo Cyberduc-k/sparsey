@@ -2,10 +2,11 @@ mod common;
 
 use common::*;
 use sparsey::prelude::*;
+use sparsey::resource::Resource;
 
 #[test]
 fn test_resources_crud() {
-    let mut resources = ResourceStorage::default();
+    let mut resources = ResourceStorage::<dyn Resource>::default();
 
     // Resources is empty at creation
     assert!(resources.is_empty());
