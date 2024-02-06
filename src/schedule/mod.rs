@@ -215,7 +215,7 @@ impl ScheduleBuilder {
     ) -> &mut Self {
         let idx = self.label_entry(label);
         if let Some(mut after_idx) = self.label_idx(&after) {
-            if after_idx > idx {
+            if after_idx < idx {
                 after_idx += 1;
             }
             let label = self.order.remove(idx);
