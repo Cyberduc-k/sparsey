@@ -40,7 +40,7 @@ pub mod prelude {
     pub use crate::resource::{
         NonSend, NonSendMut, NonSendResourceStorage, Res, ResMut, ResourceStorage,
     };
-    pub use crate::schedule::{IntoConfig, Schedule};
+    pub use crate::schedule::{IntoConfig, Schedule, Schedules};
     pub use crate::system::{Commands, Deferred, IntoSystem, Local, Run, System};
     pub use crate::world::{FromWorld, World};
 }

@@ -1,7 +1,6 @@
 //! Schedule systems
 
 use sparsey::prelude::*;
-use sparsey::schedule::Update;
 
 #[derive(Clone, Copy, Debug)]
 struct Position(i32, i32);
@@ -57,13 +56,12 @@ fn main() {
 
     let mut schedule = Schedule::default();
     schedule
-        .add_system(Update, exclusive)
-        .add_system(Update, update_velocities)
-        .add_system(Update, update_positions);
+        .add_system(exclusive)
+        .add_system(update_velocities)
+        .add_system(update_positions);
 
     println!("Schedule: {schedule:#?}");
     println!();
-    schedule.initialize(&mut world);
 
     for _ in 0..3 {
         schedule.run(&mut world);

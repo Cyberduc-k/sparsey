@@ -11,6 +11,7 @@ use super::condition::{BoxedCondition, Condition};
 pub struct SystemConfig {
     system: BoxedSystem,
     conditions: Vec<BoxedCondition>,
+    is_initialized: bool,
 }
 
 /// Types that can convert into a [`SystemConfig`].
@@ -42,6 +43,7 @@ where
         SystemConfig {
             system: Box::new(self.into_system()),
             conditions: vec![],
+            is_initialized: false,
         }
     }
 }
@@ -69,9 +71,12 @@ impl SystemConfig {
 
     /// Initialize the system state.
     pub fn initialize(&mut self, world: &mut World) {
-        self.system.initialize(world);
-        for condition in &mut self.conditions {
-            condition.initialize(world);
+        if !self.is_initialized {
+            self.system.initialize(world);
+            for condition in &mut self.conditions {
+                condition.initialize(world);
+            }
+            self.is_initialized = true;
         }
     }
 

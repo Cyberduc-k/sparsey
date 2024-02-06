@@ -12,6 +12,7 @@ readme = "README.md"
 
 [dependencies]
 atomic_refcell = "0.1.13"
+labels = { git = "https://github.com/Cyberduc-k/labels.git" }
 rayon = "1.8.1"
 rustc-hash = "1.1"
 
