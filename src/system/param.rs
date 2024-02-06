@@ -11,8 +11,6 @@ use super::LocalData;
 pub enum SystemParamKind {
     /// View over all entities in an [`EntityStorage`](crate::entity::EntityStorage).
     Entities,
-    /// State local to a system.
-    State(TypeData),
     /// Shared view over all components of a given type.
     Comp(TypeData),
     /// Exclusive view over all components of a given type.
@@ -21,6 +19,10 @@ pub enum SystemParamKind {
     Res(TypeData),
     /// Exclusive view over a resource of a given type.
     ResMut(TypeData),
+    /// Shared view over a non-[`Send`] resource of a given type.
+    NonSend(TypeData),
+    /// Exclusive view over a non-[`Send`] resource of a given type.
+    NonSendMut(TypeData),
 }
 
 impl SystemParamKind {
@@ -37,6 +39,9 @@ impl SystemParamKind {
             (Self::Res(r1), Self::ResMut(r2)) => r1 == r2,
             (Self::ResMut(r1), Self::Res(r2)) => r1 == r2,
             (Self::ResMut(r1), Self::ResMut(r2)) => r1 == r2,
+            (Self::NonSend(r1), Self::NonSendMut(r2)) => r1 == r2,
+            (Self::NonSendMut(r1), Self::NonSend(r2)) => r1 == r2,
+            (Self::NonSendMut(r1), Self::NonSendMut(r2)) => r1 == r2,
             _ => false,
         }
     }
@@ -44,49 +49,27 @@ impl SystemParamKind {
 
 /// Trait implemented by types that can be borrowed by systems during execution.
 pub trait SystemParam {
-    /// The kind of system parameter.
-    const KIND: SystemParamKind;
-
     /// Whether this paramter is [`Send`] and [`Sync`].
     const SEND: bool;
 
     /// The system parameter generic over the lifetimes `'w` and `'s`.
-    type Item<'w, 's>;
+    type Item<'w, 's>: SystemParam<State = Self::State>;
 
     /// The state used by this parameter.
     type State: LocalData;
 
+    /// Fills `kinds` with all parameter kinds used by this [`SystemParam`].
+    #[inline]
+    #[allow(unused_variables)]
+    fn param_kinds(kinds: &mut Vec<SystemParamKind>) {}
+
     /// Create the initial state from the [`World`].
     fn init_state(world: &mut World) -> Self::State;
 
-    /// Borrows data from the [`World`].
-    #[must_use]
-    unsafe fn borrow<'w, 's>(
-        state: &'s mut Self::State,
-        world: UnsafeWorldCell<'w>,
-    ) -> Self::Item<'w, 's>;
-
     /// Apply any deferred mutations to the [`World`].
+    #[inline]
     #[allow(unused_variables)]
     fn apply(state: &mut Self::State, world: &mut World) {}
-}
-
-/// A set of multiple [`SystemParam`].
-pub trait SystemParamSet {
-    /// The kinds of system parameters.
-    const KINDS: &'static [SystemParamKind];
-
-    /// Whether this parameter set is [`Send`] and [`Sync`].
-    const SEND: bool;
-
-    /// The system parameter set generic over the lifetimes `'w` and `'s`.
-    type Item<'w, 's>;
-
-    /// The state used by this parameter set.
-    type State: LocalData;
-
-    /// Create the initial state from the [`World`].
-    fn init_state(world: &mut World) -> Self::State;
 
     /// Borrows data from the [`World`].
     #[must_use]
@@ -94,23 +77,24 @@ pub trait SystemParamSet {
         state: &'s mut Self::State,
         world: UnsafeWorldCell<'w>,
     ) -> Self::Item<'w, 's>;
-
-    /// Apply any deferred mutations to the [`World`].
-    fn apply(state: &mut Self::State, world: &mut World);
 }
+
+/// Shorthand way of accessing the associated type [`SystemParam::Item`] for a given
+/// [`SystemParam`].
+pub type SystemParamItem<'w, 's, P> = <P as SystemParam>::Item<'w, 's>;
 
 /// A [`SystemParam`] that only reads the [`World`].
 pub unsafe trait ReadonlySystemParam: SystemParam {}
 
-/// A [`SystemParamSet`] that only reads the [`World`].
-pub unsafe trait ReadonlySystemParamSet: SystemParamSet {}
-
 impl SystemParam for Entities<'_> {
-    const KIND: SystemParamKind = SystemParamKind::Entities;
     const SEND: bool = true;
 
     type Item<'w, 's> = Entities<'w>;
     type State = ();
+
+    fn param_kinds(kinds: &mut Vec<SystemParamKind>) {
+        kinds.push(SystemParamKind::Entities);
+    }
 
     fn init_state(_: &mut World) -> Self::State {}
 
@@ -128,11 +112,14 @@ impl<T> SystemParam for Comp<'_, T>
 where
     T: Component,
 {
-    const KIND: SystemParamKind = SystemParamKind::Comp(TypeData::new::<T>());
     const SEND: bool = true;
 
     type Item<'w, 's> = Comp<'w, T>;
     type State = ();
+
+    fn param_kinds(kinds: &mut Vec<SystemParamKind>) {
+        kinds.push(SystemParamKind::Comp(TypeData::new::<T>()));
+    }
 
     fn init_state(_: &mut World) -> Self::State {}
 
@@ -150,11 +137,14 @@ impl<T> SystemParam for CompMut<'_, T>
 where
     T: Component,
 {
-    const KIND: SystemParamKind = SystemParamKind::CompMut(TypeData::new::<T>());
     const SEND: bool = true;
 
     type Item<'w, 's> = CompMut<'w, T>;
     type State = ();
+
+    fn param_kinds(kinds: &mut Vec<SystemParamKind>) {
+        kinds.push(SystemParamKind::CompMut(TypeData::new::<T>()));
+    }
 
     fn init_state(_: &mut World) -> Self::State {}
 
@@ -170,11 +160,14 @@ impl<T> SystemParam for Res<'_, T>
 where
     T: Resource,
 {
-    const KIND: SystemParamKind = SystemParamKind::Res(TypeData::new::<T>());
     const SEND: bool = true;
 
     type Item<'w, 's> = Res<'w, T>;
     type State = ();
+
+    fn param_kinds(kinds: &mut Vec<SystemParamKind>) {
+        kinds.push(SystemParamKind::Res(TypeData::new::<T>()));
+    }
 
     fn init_state(_: &mut World) -> Self::State {}
 
@@ -192,11 +185,14 @@ impl<T> SystemParam for ResMut<'_, T>
 where
     T: Resource,
 {
-    const KIND: SystemParamKind = SystemParamKind::ResMut(TypeData::new::<T>());
     const SEND: bool = true;
 
     type Item<'w, 's> = ResMut<'w, T>;
     type State = ();
+
+    fn param_kinds(kinds: &mut Vec<SystemParamKind>) {
+        kinds.push(SystemParamKind::ResMut(TypeData::new::<T>()));
+    }
 
     fn init_state(_: &mut World) -> Self::State {}
 
@@ -212,11 +208,14 @@ impl<T> SystemParam for Option<Res<'_, T>>
 where
     T: Resource,
 {
-    const KIND: SystemParamKind = SystemParamKind::Res(TypeData::new::<T>());
     const SEND: bool = true;
 
     type Item<'w, 's> = Option<Res<'w, T>>;
     type State = ();
+
+    fn param_kinds(kinds: &mut Vec<SystemParamKind>) {
+        kinds.push(SystemParamKind::Res(TypeData::new::<T>()));
+    }
 
     fn init_state(_: &mut World) -> Self::State {}
 
@@ -234,11 +233,14 @@ impl<T> SystemParam for Option<ResMut<'_, T>>
 where
     T: Resource,
 {
-    const KIND: SystemParamKind = SystemParamKind::ResMut(TypeData::new::<T>());
     const SEND: bool = true;
 
     type Item<'w, 's> = Option<ResMut<'w, T>>;
     type State = ();
+
+    fn param_kinds(kinds: &mut Vec<SystemParamKind>) {
+        kinds.push(SystemParamKind::ResMut(TypeData::new::<T>()));
+    }
 
     fn init_state(_: &mut World) -> Self::State {}
 
@@ -254,11 +256,14 @@ impl<T> SystemParam for NonSend<'_, T>
 where
     T: NonSendResource,
 {
-    const KIND: SystemParamKind = SystemParamKind::Res(TypeData::new_non_send::<T>());
     const SEND: bool = false;
 
     type Item<'w, 's> = NonSend<'w, T>;
     type State = ();
+
+    fn param_kinds(kinds: &mut Vec<SystemParamKind>) {
+        kinds.push(SystemParamKind::Res(TypeData::new_non_send::<T>()));
+    }
 
     fn init_state(_: &mut World) -> Self::State {}
 
@@ -276,11 +281,14 @@ impl<T> SystemParam for NonSendMut<'_, T>
 where
     T: NonSendResource,
 {
-    const KIND: SystemParamKind = SystemParamKind::ResMut(TypeData::new_non_send::<T>());
     const SEND: bool = false;
 
     type Item<'w, 's> = NonSendMut<'w, T>;
     type State = ();
+
+    fn param_kinds(kinds: &mut Vec<SystemParamKind>) {
+        kinds.push(SystemParamKind::NonSendMut(TypeData::new_non_send::<T>()));
+    }
 
     fn init_state(_: &mut World) -> Self::State {}
 
@@ -296,11 +304,14 @@ impl<T> SystemParam for Option<NonSend<'_, T>>
 where
     T: NonSendResource,
 {
-    const KIND: SystemParamKind = SystemParamKind::Res(TypeData::new_non_send::<T>());
     const SEND: bool = false;
 
     type Item<'w, 's> = Option<NonSend<'w, T>>;
     type State = ();
+
+    fn param_kinds(kinds: &mut Vec<SystemParamKind>) {
+        kinds.push(SystemParamKind::NonSend(TypeData::new_non_send::<T>()));
+    }
 
     fn init_state(_: &mut World) -> Self::State {}
 
@@ -318,11 +329,14 @@ impl<T> SystemParam for Option<NonSendMut<'_, T>>
 where
     T: NonSendResource,
 {
-    const KIND: SystemParamKind = SystemParamKind::ResMut(TypeData::new_non_send::<T>());
     const SEND: bool = false;
 
     type Item<'w, 's> = Option<NonSendMut<'w, T>>;
     type State = ();
+
+    fn param_kinds(kinds: &mut Vec<SystemParamKind>) {
+        kinds.push(SystemParamKind::NonSendMut(TypeData::new_non_send::<T>()));
+    }
 
     fn init_state(_: &mut World) -> Self::State {}
 
@@ -336,33 +350,37 @@ where
 
 macro_rules! impl_system_param_set {
     ($(($Param:ident $n:tt)),*) => {
-        impl<$($Param),*> SystemParamSet for ($($Param,)*)
+        impl<$($Param),*> SystemParam for ($($Param,)*)
         where
             $($Param: SystemParam),*
         {
-            const KINDS: &'static [SystemParamKind] = &[$($Param::KIND),*];
             const SEND: bool = true $(&& $Param::SEND)*;
 
             type Item<'w, 's> = ($($Param::Item<'w, 's>,)*);
             type State = ($($Param::State,)*);
+
+            #[allow(unused_variables)]
+            fn param_kinds(kinds: &mut Vec<SystemParamKind>) {
+                $($Param::param_kinds(kinds);)*
+            }
 
             #[allow(clippy::unused_unit, unused_variables)]
             fn init_state(world: &mut World) -> Self::State {
                 ($($Param::init_state(world),)*)
             }
 
-            #[allow(clippy::unused_unit, unused_variables)]
-            unsafe fn borrow<'w, 's>(state: &'s mut Self::State, world: UnsafeWorldCell<'w>) -> Self::Item<'w, 's> {
-                ($($Param::borrow(&mut state.$n, world),)*)
-            }
-
             #[allow(unused_variables)]
             fn apply(state: &mut Self::State, world: &mut World) {
                 $($Param::apply(&mut state.$n, world);)*
             }
+
+            #[allow(clippy::unused_unit, unused_variables)]
+            unsafe fn borrow<'w, 's>(state: &'s mut Self::State, world: UnsafeWorldCell<'w>) -> Self::Item<'w, 's> {
+                ($($Param::borrow(&mut state.$n, world),)*)
+            }
         }
 
-        unsafe impl<$($Param),*> ReadonlySystemParamSet for ($($Param,)*)
+        unsafe impl<$($Param),*> ReadonlySystemParam for ($($Param,)*)
         where
             $($Param: ReadonlySystemParam),*
         {}

@@ -276,6 +276,32 @@ impl World {
     {
         self.resources.borrow_mut::<T>()
     }
+
+    /// Borrows a resource of type `T` from the storage, if it exists.
+    #[must_use]
+    pub fn try_resource<T>(&self) -> Option<Res<T>>
+    where
+        T: Resource,
+    {
+        self.resources.try_borrow::<T>()
+    }
+
+    /// Mutably borrows a resource of type `T` from the storage, if it exists.
+    #[must_use]
+    pub fn try_resource_mut<T>(&self) -> Option<ResMut<T>>
+    where
+        T: Resource,
+    {
+        self.resources.try_borrow_mut::<T>()
+    }
+
+    /// Gets a mutable reference to a resource of type `T`, if it exists.
+    pub fn get_resource<T>(&mut self) -> Option<&mut T>
+    where
+        T: Resource,
+    {
+        self.resources.try_get_mut()
+    }
 }
 
 impl World {

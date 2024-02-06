@@ -9,7 +9,7 @@ use super::{Local, LocalData};
 /// Trait implemented by types that can be borrowed by systems during execution.
 pub trait ExclusiveSystemParam {
     /// The system parameter generic over the lifetimes `'w` and `'s`.
-    type Item<'s>;
+    type Item<'s>: ExclusiveSystemParam<State = Self::State>;
 
     /// The state used by this parameter.
     type State: LocalData;
@@ -18,22 +18,6 @@ pub trait ExclusiveSystemParam {
     fn init_state(world: &mut World) -> Self::State;
 
     /// Borrows data from the given `registry`.
-    #[must_use]
-    fn borrow<'s>(state: &'s mut Self::State) -> Self::Item<'s>;
-}
-
-/// A set of multiple [`ExclusiveSystemParam`].
-pub trait ExclusiveSystemParamSet {
-    /// The system parameter set generic over the lifetimes `'w` and `'s`.
-    type Item<'s>;
-
-    /// The state used by this parameter set.
-    type State: LocalData;
-
-    /// Create the initial state from the [`World`].
-    fn init_state(world: &mut World) -> Self::State;
-
-    /// Borrows data from the state.
     #[must_use]
     fn borrow<'s>(state: &'s mut Self::State) -> Self::Item<'s>;
 }
@@ -56,7 +40,7 @@ where
 
 macro_rules! impl_exclusive_system_param_set {
     ($(($Param:ident $n:tt)),*) => {
-        impl<$($Param),*> ExclusiveSystemParamSet for ($($Param,)*)
+        impl<$($Param),*> ExclusiveSystemParam for ($($Param,)*)
         where
             $($Param: ExclusiveSystemParam),*
         {

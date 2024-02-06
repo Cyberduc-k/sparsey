@@ -4,15 +4,16 @@ use std::marker::PhantomData;
 use crate::prelude::World;
 use crate::world::UnsafeWorldCell;
 
-use super::exclusive_param::{ExclusiveSystemParam, ExclusiveSystemParamSet};
+use super::exclusive_param::ExclusiveSystemParam;
 use super::{In, IntoSystem, System};
 
+/// A function system that runs with exclusive [`World`] access.
 pub struct ExclusiveSystem<F, Marker>
 where
     F: ExclusiveSystemParamFunction<Marker>,
 {
     func: F,
-    param_state: Option<<F::Params as ExclusiveSystemParamSet>::State>,
+    param_state: Option<<F::Params as ExclusiveSystemParam>::State>,
     marker: PhantomData<fn() -> Marker>,
 }
 
@@ -86,16 +87,21 @@ where
     }
 }
 
+/// A trait implemented for all exclusive system functions that can be used as [`System`]s.
 pub trait ExclusiveSystemParamFunction<Marker>: Send + Sync + 'static {
+    /// The input type for this system.
     type In;
+    /// The return type of this system.
     type Out;
-    type Params: ExclusiveSystemParamSet;
+    /// The [`ExclusiveSystemParam`]/s defined by this system's 'fn' parameters.
+    type Params: ExclusiveSystemParam;
 
+    /// Executes this system once.
     fn run(
         &mut self,
         world: &mut World,
         input: Self::In,
-        param: <Self::Params as ExclusiveSystemParamSet>::Item<'_>,
+        param: <Self::Params as ExclusiveSystemParam>::Item<'_>,
     ) -> Self::Out;
 }
 
@@ -117,7 +123,7 @@ macro_rules! impl_exclusive_system_function {
 
             #[inline]
             #[allow(unused_variables)]
-            fn run(&mut self, world: &mut World, _: (), param: <Self::Params as ExclusiveSystemParamSet>::Item<'_>) -> Out {
+            fn run(&mut self, world: &mut World, _: (), param: <Self::Params as ExclusiveSystemParam>::Item<'_>) -> Out {
                 #[allow(clippy::too_many_arguments)]
                 fn call_inner<Out, $($Param),*>(
                     mut f: impl FnMut(&mut World, $($Param),*) -> Out,
@@ -146,7 +152,7 @@ macro_rules! impl_exclusive_system_function {
 
             #[inline]
             #[allow(unused_variables)]
-            fn run(&mut self, world: &mut World, input: Input, param: <Self::Params as ExclusiveSystemParamSet>::Item<'_>) -> Out {
+            fn run(&mut self, world: &mut World, input: Input, param: <Self::Params as ExclusiveSystemParam>::Item<'_>) -> Out {
                 #[allow(clippy::too_many_arguments)]
                 fn call_inner<Input, Out, $($Param),*>(
                     mut f: impl FnMut(&mut World, In<Input>, $($Param),*) -> Out,

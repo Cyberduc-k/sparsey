@@ -28,22 +28,34 @@ pub struct CommandQueue {
 }
 
 impl SystemBuffer for CommandQueue {
+    #[inline]
     fn apply(&mut self, world: &mut World) {
         self.apply_or_drop_queud(Some(world));
     }
 }
 
 impl SystemParam for Commands<'_, '_> {
-    const KIND: SystemParamKind = SystemParamKind::Entities;
     const SEND: bool = true;
 
     type Item<'w, 's> = Commands<'w, 's>;
     type State = Exclusive<CommandQueue>;
 
+    #[inline]
+    fn param_kinds(kinds: &mut Vec<SystemParamKind>) {
+        kinds.push(SystemParamKind::Entities);
+    }
+
+    #[inline]
     fn init_state(_: &mut World) -> Self::State {
         Default::default()
     }
 
+    #[inline]
+    fn apply(state: &mut Self::State, world: &mut World) {
+        state.get_mut().apply(world);
+    }
+
+    #[inline]
     unsafe fn borrow<'w, 's>(
         state: &'s mut Self::State,
         world: UnsafeWorldCell<'w>,
@@ -60,6 +72,7 @@ impl Commands<'_, '_> {
     /// added to the storage until [`maintain`](Self::maintain) is called.
     ///
     /// Returns the newly created entity.
+    #[inline]
     pub fn create_atomic(&self) -> Entity {
         self.entities.create_atomic()
     }
@@ -67,6 +80,7 @@ impl Commands<'_, '_> {
     /// Creates a new entity with the given `components`.
     ///
     /// Returns the newly created entity.
+    #[inline]
     pub fn create<C>(&mut self, components: C) -> Entity
     where
         C: ComponentSet + Send + 'static,
@@ -77,6 +91,7 @@ impl Commands<'_, '_> {
     }
 
     /// Creates new entities with the components produced by the iterator.
+    #[inline]
     pub fn extend<C, I>(&mut self, components: I)
     where
         C: ComponentSet + Send + 'static,
@@ -88,6 +103,7 @@ impl Commands<'_, '_> {
     }
 
     /// Adds the given `components` to `entity` if `entity` is present in the storage.
+    #[inline]
     pub fn insert<C>(&mut self, entity: Entity, components: C)
     where
         C: ComponentSet + Send + 'static,
@@ -98,6 +114,7 @@ impl Commands<'_, '_> {
     }
 
     /// Removes components from the given `entity`.
+    #[inline]
     pub fn delete<C>(&mut self, entity: Entity)
     where
         C: ComponentSet + Send + 'static,
@@ -108,6 +125,7 @@ impl Commands<'_, '_> {
     }
 
     /// Removes the given `entity` and its components from the storage.
+    #[inline]
     pub fn destroy(&mut self, entity: Entity) {
         self.queue.push(move |world: &mut World| {
             world.entities.destroy(entity);
@@ -115,6 +133,7 @@ impl Commands<'_, '_> {
     }
 
     /// Insert a resource into the storage.
+    #[inline]
     pub fn insert_resource<R: Resource>(&mut self, resource: R) {
         self.queue.push(move |world: &mut World| {
             world.resources.insert(resource);
@@ -122,6 +141,7 @@ impl Commands<'_, '_> {
     }
 
     /// Insert a resource into the storage.
+    #[inline]
     pub fn remove_resource<R: Resource>(&mut self) {
         self.queue.push(move |world: &mut World| {
             world.resources.remove::<R>();
@@ -133,6 +153,7 @@ impl<F> Command for F
 where
     F: FnOnce(&mut World) + Send + 'static,
 {
+    #[inline]
     fn apply(self, world: &mut World) {
         self(world);
     }
@@ -204,6 +225,7 @@ impl CommandQueue {
 }
 
 impl Drop for CommandQueue {
+    #[inline]
     fn drop(&mut self) {
         self.apply_or_drop_queud(None);
     }

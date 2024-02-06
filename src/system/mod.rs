@@ -16,6 +16,8 @@ use crate::world::{UnsafeWorldCell, World};
 pub use self::commands::*;
 pub use self::deferred::*;
 pub use self::exclusive_param::*;
+pub use self::exclusive_system::*;
+pub use self::function_system::*;
 pub use self::local::*;
 pub use self::param::*;
 pub use self::run::*;

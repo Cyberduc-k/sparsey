@@ -5,16 +5,60 @@ use crate::prelude::World;
 use crate::world::UnsafeWorldCell;
 
 use super::{
-    In, IntoSystem, ReadonlySystem, ReadonlySystemParamSet, System, SystemParam, SystemParamKind,
-    SystemParamSet,
+    In, IntoSystem, ReadonlySystem, ReadonlySystemParam, System, SystemParam, SystemParamItem,
+    SystemParamKind,
 };
 
+/// This is a powerful and convenient tool for working with exclusive world access, allowing you to
+/// fetch data from the [`World`] as if you were running a [`System`].
+pub struct SystemState<Param: SystemParam + 'static> {
+    param_state: Param::State,
+}
+
+impl<Param: SystemParam> SystemState<Param> {
+    /// Creates a new [`SystemState`] with default state.
+    pub fn new(world: &mut World) -> Self {
+        Self {
+            param_state: Param::init_state(world),
+        }
+    }
+
+    /// Applies deferred mutations to the [`World`].
+    pub fn apply(&mut self, world: &mut World) {
+        Param::apply(&mut self.param_state, world);
+    }
+
+    /// Retrieve the [`SystemParam`] values. This can only be called when all parameters are
+    /// read-only.
+    pub fn get<'w, 's>(&'s mut self, world: &'w World) -> SystemParamItem<'w, 's, Param>
+    where
+        Param: ReadonlySystemParam,
+    {
+        unsafe { self.get_unchecked(world.as_unsafe_world_cell()) }
+    }
+
+    /// Retrieve the [`SystemParam`] values.
+    pub fn get_mut<'w, 's>(&'s mut self, world: &'w mut World) -> SystemParamItem<'w, 's, Param> {
+        unsafe { self.get_unchecked(world.as_unsafe_world_cell()) }
+    }
+
+    /// Retrieve the [`SystemParam`] values.
+    pub unsafe fn get_unchecked<'w, 's>(
+        &'s mut self,
+        world: UnsafeWorldCell<'w>,
+    ) -> SystemParamItem<'w, 's, Param> {
+        Param::borrow(&mut self.param_state, world)
+    }
+}
+
+/// The [`System`] counter part of an ordinary function.
 pub struct FunctionSystem<F, Marker>
 where
     F: SystemParamFunction<Marker>,
 {
     func: F,
-    param_state: Option<<F::Params as SystemParamSet>::State>,
+    param_state: Option<<F::Param as SystemParam>::State>,
+    param_kinds: Vec<SystemParamKind>,
     marker: PhantomData<fn() -> Marker>,
 }
 
@@ -29,9 +73,12 @@ where
     type System = FunctionSystem<F, Marker>;
 
     fn into_system(self) -> Self::System {
+        let mut param_kinds = Vec::new();
+        F::Param::param_kinds(&mut param_kinds);
         FunctionSystem {
             func: self,
             param_state: None,
+            param_kinds,
             marker: PhantomData,
         }
     }
@@ -52,7 +99,7 @@ where
 
     #[inline]
     fn param_kinds(&self) -> &[SystemParamKind] {
-        F::Params::KINDS
+        &self.param_kinds
     }
 
     unsafe fn run_unsafe(&mut self, input: Self::In, world: UnsafeWorldCell) -> Self::Out {
@@ -60,7 +107,7 @@ where
             .param_state
             .as_mut()
             .expect("param_state not initialized");
-        let params = F::Params::borrow(state, world);
+        let params = F::Param::borrow(state, world);
         self.func.run(input, params)
     }
 
@@ -69,12 +116,12 @@ where
             .param_state
             .as_mut()
             .expect("param_state not initialized");
-        F::Params::apply(state, world);
+        F::Param::apply(state, world);
     }
 
     #[inline]
     fn initialize(&mut self, world: &mut World) {
-        self.param_state = Some(F::Params::init_state(world));
+        self.param_state = Some(F::Param::init_state(world));
     }
 
     #[inline]
@@ -84,7 +131,7 @@ where
 
     #[inline]
     fn is_thread_local(&self) -> bool {
-        !F::Params::SEND
+        !F::Param::SEND
     }
 }
 
@@ -92,20 +139,21 @@ unsafe impl<F, Marker> ReadonlySystem for FunctionSystem<F, Marker>
 where
     Marker: 'static,
     F: SystemParamFunction<Marker>,
-    F::Params: ReadonlySystemParamSet,
+    F::Param: ReadonlySystemParam,
 {
 }
 
+/// A trait implemented for all functions that can used as [`System`]s.
 pub trait SystemParamFunction<Marker>: Send + Sync + 'static {
+    /// The input type to this system.
     type In;
+    /// The return type of this system.
     type Out;
-    type Params: SystemParamSet;
+    /// The [`SystemParam`]/s used by this system.
+    type Param: SystemParam;
 
-    fn run(
-        &mut self,
-        input: Self::In,
-        param: <Self::Params as SystemParamSet>::Item<'_, '_>,
-    ) -> Self::Out;
+    /// Executes this system once.
+    fn run(&mut self, input: Self::In, param: SystemParamItem<'_, '_, Self::Param>) -> Self::Out;
 }
 
 macro_rules! impl_system_function {
@@ -122,11 +170,11 @@ macro_rules! impl_system_function {
         {
             type In = ();
             type Out = Out;
-            type Params = ($($Param,)*);
+            type Param = ($($Param,)*);
 
             #[inline]
             #[allow(unused_variables)]
-            fn run(&mut self, _: (), param: <Self::Params as SystemParamSet>::Item<'_, '_>) -> Out {
+            fn run(&mut self, _: (), param: SystemParamItem<'_, '_, Self::Param>) -> Out {
                 #[allow(clippy::too_many_arguments)]
                 fn call_inner<Out, $($Param),*>(
                     mut f: impl FnMut($($Param),*) -> Out,
@@ -150,11 +198,11 @@ macro_rules! impl_system_function {
         {
             type In = Input;
             type Out = Out;
-            type Params = ($($Param,)*);
+            type Param = ($($Param,)*);
 
             #[inline]
             #[allow(unused_variables)]
-            fn run(&mut self, input: Input, param: <Self::Params as SystemParamSet>::Item<'_, '_>) -> Out {
+            fn run(&mut self, input: Input, param: SystemParamItem<'_, '_, Self::Param>) -> Out {
                 #[allow(clippy::too_many_arguments)]
                 fn call_inner<Input, Out, $($Param),*>(
                     mut f: impl FnMut(In<Input>, $($Param),*) -> Out,

@@ -2,10 +2,9 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Exclusive;
 
 use crate::prelude::{FromWorld, World};
-use crate::util::TypeData;
 use crate::world::UnsafeWorldCell;
 
-use super::{ReadonlySystemParam, SystemParam, SystemParamKind};
+use super::{ReadonlySystemParam, SystemParam};
 
 /// Types that can be used with [`Deferred<T>`] in systems.
 pub trait SystemBuffer: Send + 'static {
@@ -41,7 +40,6 @@ impl<T> SystemParam for Deferred<'_, T>
 where
     T: SystemBuffer + FromWorld,
 {
-    const KIND: SystemParamKind = SystemParamKind::State(TypeData::new::<Exclusive<T>>());
     const SEND: bool = true;
 
     type Item<'w, 's> = Deferred<'s, T>;
@@ -51,15 +49,15 @@ where
         Exclusive::new(T::from_world(world))
     }
 
+    fn apply(state: &mut Self::State, world: &mut World) {
+        state.get_mut().apply(world);
+    }
+
     unsafe fn borrow<'w, 's>(
         state: &'s mut Self::State,
         _: UnsafeWorldCell<'w>,
     ) -> Self::Item<'w, 's> {
         Deferred(state.get_mut())
-    }
-
-    fn apply(state: &mut Self::State, world: &mut World) {
-        state.get_mut().apply(world);
     }
 }
 

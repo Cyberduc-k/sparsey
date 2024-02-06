@@ -15,6 +15,14 @@ pub use self::label::*;
 /// Schedules systems to run sequentially or in parallel without data conflicts.
 #[derive(Debug)]
 pub struct Schedule {
+    sets: FxHashMap<Box<dyn ScheduleLabel>, ScheduleSet>,
+    order: Vec<Box<dyn ScheduleLabel>>,
+    max_threads: usize,
+}
+
+/// A set of [`ScheduleStep`]s.
+#[derive(Default, Debug)]
+pub struct ScheduleSet {
     steps: Vec<ScheduleStep>,
 }
 
@@ -31,58 +39,55 @@ pub enum ScheduleStep {
     Barrier,
 }
 
-/// Enables creating a [`Schedule`] using the builder pattern.
-pub struct ScheduleBuilder {
-    sets: FxHashMap<Box<dyn ScheduleLabel>, Vec<SimpleScheduleStep>>,
-    order: Vec<Box<dyn ScheduleLabel>>,
-}
+impl Default for Schedule {
+    fn default() -> Self {
+        let mut schedule = Self {
+            sets: Default::default(),
+            order: Default::default(),
+            max_threads: usize::MAX,
+        };
 
-enum SimpleScheduleStep {
-    System(SystemConfig),
-    LocalSystem(SystemConfig),
-    ExclusiveSystem(SystemConfig),
-    Barrier,
+        schedule.add_label(First);
+        schedule.add_label(PreUpdate);
+        schedule.add_label(Update);
+        schedule.add_label(PostUpdate);
+        schedule.add_label(Last);
+        schedule
+    }
 }
 
 impl Schedule {
-    /// Enables creating a schedule using the builder pattern.
-    pub fn builder() -> ScheduleBuilder {
-        Default::default()
+    /// Set the `max_threads` of this [`Schedule`].
+    pub fn with_max_threads(mut self, max_threads: usize) -> Self {
+        self.max_threads = max_threads;
+        self
     }
 
-    /// Consumes the schedule and returns the steps comprising it.
-    pub fn into_steps(self) -> Vec<ScheduleStep> {
-        self.steps
+    /// Consumes the schedule and returns the sets comprising it.
+    pub fn into_sets(self) -> FxHashMap<Box<dyn ScheduleLabel>, ScheduleSet> {
+        self.sets
+    }
+
+    /// Returns the schedule order.
+    pub fn order(&self) -> &[Box<dyn ScheduleLabel>] {
+        &self.order
     }
 
     /// Initializes all systems in the schedule.
     pub fn initialize(&mut self, world: &mut World) {
-        for step in &mut self.steps {
-            match step {
-                ScheduleStep::Systems(systems) => {
-                    for system in systems {
-                        system.initialize(world);
-                    }
-                }
-                ScheduleStep::LocalSystems(systems) => {
-                    for system in systems {
-                        system.initialize(world);
-                    }
-                }
-                ScheduleStep::ExclusiveSystems(systems) => {
-                    for system in systems {
-                        system.initialize(world);
-                    }
-                }
-                ScheduleStep::Barrier => {}
-            }
+        for set in self.sets.values_mut() {
+            set.initialize(world);
         }
     }
 
     /// Runs the systems. Calls [`maintain`](World::maintain) after each barrier and right before
     /// the function returns.
     pub fn run(&mut self, world: &mut World) {
-        self.run_seq(world);
+        if self.max_threads == 0 {
+            self.run_seq(world);
+        } else {
+            self.run_par(world);
+        }
     }
 
     /// Runs the systems sequentially.
@@ -108,6 +113,44 @@ impl Schedule {
                 unsafe { systems[0].run_unsafe(world) };
             }
         });
+    }
+
+    fn run_generic(
+        &mut self,
+        world: &mut World,
+        mut system_runner: impl FnMut(&mut [SystemConfig], UnsafeWorldCell) + Send,
+    ) {
+        for label in &self.order {
+            if let Some(set) = self.sets.get_mut(label) {
+                set.run_generic(world, &mut system_runner);
+            }
+        }
+    }
+}
+
+impl ScheduleSet {
+    /// Initializes all systems in the set.
+    pub fn initialize(&mut self, world: &mut World) {
+        for step in &mut self.steps {
+            match step {
+                ScheduleStep::Systems(systems) => {
+                    for system in systems {
+                        system.initialize(world);
+                    }
+                }
+                ScheduleStep::LocalSystems(systems) => {
+                    for system in systems {
+                        system.initialize(world);
+                    }
+                }
+                ScheduleStep::ExclusiveSystems(systems) => {
+                    for system in systems {
+                        system.initialize(world);
+                    }
+                }
+                ScheduleStep::Barrier => {}
+            }
+        }
     }
 
     fn run_generic(
@@ -143,36 +186,23 @@ impl Schedule {
     }
 }
 
-impl Default for ScheduleBuilder {
-    fn default() -> Self {
-        let mut builder = Self {
-            sets: Default::default(),
-            order: Default::default(),
-        };
-
-        builder.add_label(First);
-        builder.add_label(PreUpdate);
-        builder.add_label(Update);
-        builder.add_label(PostUpdate);
-        builder.add_label(Last);
-        builder
-    }
-}
-
-impl ScheduleBuilder {
+impl Schedule {
     /// Adds a system to the schedule.
     pub fn add_system<M>(
         &mut self,
         label: impl ScheduleLabel,
         system: impl IntoConfig<M>,
     ) -> &mut Self {
+        let max_threads = self.max_threads;
         let system = system.into_config();
-        let step = match (system.is_exclusive(), system.is_thread_local()) {
-            (true, _) => SimpleScheduleStep::ExclusiveSystem(system),
-            (_, true) => SimpleScheduleStep::LocalSystem(system),
-            (_, _) => SimpleScheduleStep::System(system),
-        };
-        self.entry(Box::new(label)).push(step);
+        let set = self.entry(Box::new(label));
+        if system.is_exclusive() {
+            set.add_exclusive_system(system);
+        } else if system.is_thread_local() {
+            set.add_local_system(system);
+        } else {
+            set.add_system(system, max_threads);
+        }
         self
     }
 
@@ -180,7 +210,8 @@ impl ScheduleBuilder {
     /// systems.
     pub fn add_barrier(&mut self, label: impl ScheduleLabel) -> &mut Self {
         self.entry(Box::new(label))
-            .push(SimpleScheduleStep::Barrier);
+            .steps
+            .push(ScheduleStep::Barrier);
         self
     }
 
@@ -224,7 +255,7 @@ impl ScheduleBuilder {
         self
     }
 
-    fn entry(&mut self, label: Box<dyn ScheduleLabel>) -> &mut Vec<SimpleScheduleStep> {
+    fn entry(&mut self, label: Box<dyn ScheduleLabel>) -> &mut ScheduleSet {
         self.sets.entry(label.dyn_clone()).or_insert_with(|| {
             if !self.order.contains(&label) {
                 self.order.push(label);
@@ -246,23 +277,13 @@ impl ScheduleBuilder {
     fn label_idx(&self, label: &dyn ScheduleLabel) -> Option<usize> {
         self.order.iter().position(|id| **id == *label)
     }
+}
 
-    // /// Appends the steps from the given `ScheduleBuilder` to the current schedule.
-    // pub fn append(&mut self, other: &mut ScheduleBuilder<TRegistry>) -> &mut Self {
-    //     for (label, mut set) in other.sets.drain() {
-    //         self.entry(label).append(&mut set);
-    //     }
-    //     self
-    // }
-
-    /// Builds the schedule.
-    pub fn build(&mut self) -> Schedule {
-        self.build_with_max_threads(usize::MAX)
-    }
-
-    /// Builds the schedule allowing at most `max_threads` systems to run in parallel.
-    pub fn build_with_max_threads(&mut self, max_threads: usize) -> Schedule {
-        let mut steps = Vec::<ScheduleStep>::new();
+impl ScheduleSet {
+    fn add_system(&mut self, system: SystemConfig, max_threads: usize) {
+        if matches!(self.steps.last(), Some(ScheduleStep::Systems(_))) {
+            self.steps.push(ScheduleStep::Barrier);
+        }
 
         fn step_to_non_conflicting_systems<'a>(
             step: &'a mut ScheduleStep,
@@ -285,51 +306,40 @@ impl ScheduleBuilder {
             }
         }
 
-        for label in &self.order {
-            if let Some(set) = self.sets.get_mut(label) {
-                if matches!(steps.last(), Some(ScheduleStep::Systems(_))) {
-                    steps.push(ScheduleStep::Barrier);
-                }
+        let systems = self
+            .steps
+            .iter_mut()
+            .rev()
+            .map_while(|step| step_to_non_conflicting_systems(step, &system))
+            .filter(|systems| systems.len() < max_threads)
+            .last();
 
-                for step in set.drain(..) {
-                    match step {
-                        SimpleScheduleStep::System(system) => {
-                            let systems = steps
-                                .iter_mut()
-                                .rev()
-                                .map_while(|step| step_to_non_conflicting_systems(step, &system))
-                                .filter(|systems| systems.len() < max_threads)
-                                .last();
+        match systems {
+            Some(systems) => systems.push(system),
+            None => self.steps.push(ScheduleStep::Systems(vec![system])),
+        }
+    }
 
-                            match systems {
-                                Some(systems) => systems.push(system),
-                                None => steps.push(ScheduleStep::Systems(vec![system])),
-                            }
-                        }
-                        SimpleScheduleStep::LocalSystem(system) => {
-                            match steps.last_mut() {
-                                Some(ScheduleStep::LocalSystems(systems)) => systems.push(system),
-                                _ => steps.push(ScheduleStep::LocalSystems(vec![system])),
-                            }
-                        }
-                        SimpleScheduleStep::ExclusiveSystem(system) => {
-                            match steps.last_mut() {
-                                Some(ScheduleStep::ExclusiveSystems(systems)) => {
-                                    systems.push(system)
-                                }
-                                _ => steps.push(ScheduleStep::ExclusiveSystems(vec![system])),
-                            }
-                        }
-                        SimpleScheduleStep::Barrier => {
-                            if matches!(steps.last(), Some(ScheduleStep::Systems(_))) {
-                                steps.push(ScheduleStep::Barrier);
-                            }
-                        }
-                    }
-                }
+    fn add_local_system(&mut self, system: SystemConfig) {
+        if matches!(self.steps.last(), Some(ScheduleStep::Systems(_))) {
+            self.steps.push(ScheduleStep::Barrier);
+        }
+        match self.steps.last_mut() {
+            Some(ScheduleStep::LocalSystems(systems)) => systems.push(system),
+            _ => self.steps.push(ScheduleStep::LocalSystems(vec![system])),
+        }
+    }
+
+    fn add_exclusive_system(&mut self, system: SystemConfig) {
+        if matches!(self.steps.last(), Some(ScheduleStep::Systems(_))) {
+            self.steps.push(ScheduleStep::Barrier);
+        }
+        match self.steps.last_mut() {
+            Some(ScheduleStep::ExclusiveSystems(systems)) => systems.push(system),
+            _ => {
+                self.steps
+                    .push(ScheduleStep::ExclusiveSystems(vec![system]))
             }
         }
-
-        Schedule { steps }
     }
 }

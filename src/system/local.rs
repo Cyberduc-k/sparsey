@@ -3,10 +3,9 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Exclusive;
 
 use crate::prelude::{FromWorld, World};
-use crate::util::TypeData;
 use crate::world::UnsafeWorldCell;
 
-use super::{ReadonlySystemParam, SystemParam, SystemParamKind};
+use super::{ReadonlySystemParam, SystemParam};
 
 /// State local to a system.
 #[derive(PartialEq, Eq, Hash)]
@@ -21,7 +20,6 @@ impl<T> SystemParam for Local<'_, T>
 where
     T: LocalData + FromWorld,
 {
-    const KIND: SystemParamKind = SystemParamKind::State(TypeData::new::<T>());
     const SEND: bool = true;
 
     type Item<'w, 's> = Local<'s, T>;

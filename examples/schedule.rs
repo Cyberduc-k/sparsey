@@ -55,11 +55,11 @@ fn main() {
     world.create((Position(0, 0), Velocity(2, 2)));
     world.create((Position(0, 0), Velocity(3, 3), Frozen));
 
-    let mut schedule = Schedule::builder()
+    let mut schedule = Schedule::default();
+    schedule
         .add_system(Update, exclusive)
         .add_system(Update, update_velocities)
-        .add_system(Update, update_positions)
-        .build();
+        .add_system(Update, update_positions);
 
     println!("Schedule: {schedule:#?}");
     println!();

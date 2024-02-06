@@ -3,6 +3,8 @@ use std::hash::Hash;
 
 /// A strongly-typed class of labels used to identify a [`Schedule`].
 pub trait ScheduleLabel: Any {
+    /// The name of this label.
+    fn name(&self) -> &'static str;
     /// Clone this trait object.
     fn dyn_clone(&self) -> Box<dyn ScheduleLabel>;
 }
@@ -21,6 +23,12 @@ impl Hash for dyn ScheduleLabel {
     }
 }
 
+impl std::fmt::Debug for dyn ScheduleLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.name().fmt(f)
+    }
+}
+
 /// Used to define a new [`ScheduleLabel`].
 #[macro_export]
 macro_rules! define_schedule_label {
@@ -31,6 +39,10 @@ macro_rules! define_schedule_label {
             $vis struct $label_name;
 
             impl $crate::schedule::ScheduleLabel for $label_name {
+                fn name(&self) -> &'static str {
+                    std::any::type_name::<$label_name>()
+                }
+
                 fn dyn_clone(&self) -> Box<dyn $crate::schedule::ScheduleLabel> {
                     Box::new(self.clone())
                 }

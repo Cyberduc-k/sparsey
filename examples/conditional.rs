@@ -20,9 +20,8 @@ fn stateful_condition(flag: Res<Flag>) -> bool {
 
 fn main() {
     let mut world = World::default();
-    let mut schedule = Schedule::builder()
-        .add_system(Update, stateful_system.run_if(stateful_condition))
-        .build();
+    let mut schedule = Schedule::default();
+    schedule.add_system(Update, stateful_system.run_if(stateful_condition));
     schedule.initialize(&mut world);
     world.insert_resource(Flag(true));
 
